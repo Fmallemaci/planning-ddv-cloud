@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Planning DDV</title>
+<style>
+:root{--navy:#0b2740;--navy2:#123954;--gold:#e9b514;--bg:#eef3f7;--card:#fff;--line:#d8e2ea;--muted:#61758a;--text:#102a43;--green:#16855b;--red:#c43c3c;--amber:#b77900;--shadow:0 8px 24px rgba(22,52,76,.08)}
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text)}button,input,select,textarea{font:inherit}.app{min-height:100vh;display:grid;grid-template-columns:250px 1fr}.sidebar{background:var(--navy);color:#fff;padding:22px 16px;position:sticky;top:0;height:100vh;overflow-y:auto;overflow-x:hidden}.brand{padding:6px 10px 22px;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:16px}.brand b{font-size:20px}.brand small{display:block;color:#a8bac8;margin-top:5px}.nav-label{font-size:10px;letter-spacing:1.4px;color:#8ea5b7;padding:14px 12px 8px}.nav button{width:100%;display:flex;align-items:center;gap:11px;background:transparent;border:0;color:#d9e6ee;padding:12px 13px;border-radius:10px;text-align:left;cursor:pointer;margin:2px 0}.nav button:hover{background:rgba(255,255,255,.08)}.nav button.active{background:#2a4358;color:#fff;border-left:4px solid var(--gold);padding-left:9px}.main{padding:26px 30px 50px;min-width:0}.topbar{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px}.eyebrow{color:var(--muted);font-weight:700;text-transform:uppercase;font-size:11px;letter-spacing:1.2px}.topbar h1{margin:5px 0 4px;font-size:30px}.subtitle{color:var(--muted)}.version{background:#dce8f0;color:#264861;border-radius:20px;padding:8px 12px;font-size:12px;font-weight:700}.page{display:none}.page.active{display:block}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);margin-bottom:18px;overflow:hidden}.card-head{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid var(--line)}.card-head h2,.card-head h3{margin:0;font-size:18px}.card-body{padding:20px 22px}.filters{display:flex;gap:13px;align-items:flex-end;flex-wrap:wrap}.field{display:flex;flex-direction:column;gap:6px;min-width:160px}.field label{font-size:12px;font-weight:700;color:#4f6578}.field input,.field select,.field textarea{border:1px solid #cbd7e0;border-radius:9px;padding:10px 11px;background:#fff;color:var(--text);outline:none}.field input:focus,.field select:focus,.field textarea:focus{border-color:#7699b2;box-shadow:0 0 0 3px rgba(38,91,128,.12)}.btn{border:1px solid #b8c8d3;border-radius:9px;padding:10px 15px;font-weight:700;cursor:pointer;background:#fff;color:var(--text)}.btn:hover{filter:brightness(.98)}.btn-primary{background:var(--navy);color:#fff;border-color:var(--navy)}.btn-gold{background:var(--gold);border-color:var(--gold);color:#111}.btn-danger{background:#fff0f0;color:var(--red);border-color:#edb9b9}.btn:disabled{opacity:.5;cursor:not-allowed}.kpis{display:grid;grid-template-columns:repeat(5,minmax(140px,1fr));gap:14px;margin-bottom:18px}.kpi{background:#fff;border:1px solid var(--line);border-radius:13px;padding:16px 18px;box-shadow:var(--shadow)}.kpi span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:800;letter-spacing:.7px}.kpi strong{font-size:27px;display:block;margin-top:7px}.kpi small{color:#7890a2}.grid2{display:grid;grid-template-columns:1.5fr 1fr;gap:18px}.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.upload-box{border:1.5px dashed #afc3d2;border-radius:12px;padding:20px;text-align:center;background:#f9fbfc}.upload-box b{display:block;font-size:17px;margin-bottom:6px}.upload-box small{color:var(--muted)}.upload-box input{max-width:100%;margin-top:12px}.status{padding:10px 13px;border-radius:9px;font-size:13px;font-weight:700;margin:12px 0}.status.info{background:#e9f2fa;color:#265d84}.status.ok{background:#e8f5ef;color:var(--green)}.status.warn{background:#fff6df;color:var(--amber)}.status.error{background:#ffeded;color:var(--red);white-space:pre-line}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:10px}.table{width:100%;border-collapse:collapse;font-size:12px;min-width:900px}.table th{background:#edf2f6;color:#425b6e;text-transform:uppercase;font-size:10px;letter-spacing:.45px;padding:10px 9px;text-align:left;position:sticky;top:0;z-index:1}.table td{border-top:1px solid #e4ebf0;padding:8px 9px;vertical-align:middle}.table tr:hover td{background:#fafcfd}.table input,.table select{width:100%;min-width:115px;padding:7px 8px;border:1px solid #cbd7e0;border-radius:7px;background:#fff}.table .num{text-align:right}.table .locked{font-weight:700}.tabs{display:flex;gap:8px;margin:0 0 14px}.tab{border:1px solid #cbd7e0;background:#fff;padding:9px 14px;border-radius:8px;font-weight:700;cursor:pointer}.tab.active{background:var(--navy);color:#fff;border-color:var(--navy)}.pill{display:inline-block;padding:5px 9px;border-radius:15px;font-size:11px;font-weight:800}.pill.ok{background:#e5f3ed;color:var(--green)}.pill.warn{background:#fff1ce;color:#926700}.pill.dark{background:#dce6ed;color:#28485f}.section-title{font-size:16px;font-weight:800;margin:16px 0 10px}.toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.spacer{flex:1}.empty{padding:32px;text-align:center;color:var(--muted)}.modal-back{display:none;position:fixed;inset:0;background:rgba(5,25,40,.55);z-index:20;align-items:center;justify-content:center;padding:30px}.modal-back.show{display:flex}.modal{background:white;border-radius:14px;max-width:760px;width:100%;max-height:85vh;overflow:auto;box-shadow:0 22px 70px rgba(0,0,0,.25)}.modal-head{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.modal-body{padding:20px 22px}.close{border:0;background:none;font-size:23px;cursor:pointer}.mail-frame{width:100%;height:720px;border:1px solid var(--line);border-radius:10px;background:#fff}.checklist{display:grid;gap:10px}.check{padding:12px;border:1px solid var(--line);border-radius:9px;display:flex;justify-content:space-between}.check.good{border-left:4px solid var(--green)}.check.bad{border-left:4px solid var(--gold)}.small{font-size:12px;color:var(--muted)}.daily-block{margin-bottom:18px}.daily-block:last-child{margin-bottom:0}.daily-block-head{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:0 0 10px;padding:0 2px}.daily-block-head h3{margin:3px 0 0;font-size:16px}.daily-kicker{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:1px}.cyo-block{margin-top:22px;padding-top:20px;border-top:2px solid var(--gold)}.pill.warn{background:#fff1ce;color:#926700}.hidden{display:none!important}
+.topbar-right{display:flex;align-items:center;gap:16px}.company-logo{height:46px;max-width:270px;object-fit:contain;background:#fff;border-radius:7px;padding:3px 8px}.btn-mail{background:#15855c;color:#fff;border-color:#15855c;display:inline-flex;align-items:center;gap:8px}.btn-pdf{display:inline-flex;align-items:center;gap:8px}.btn svg{width:18px;height:18px;flex:0 0 auto}.daily-summary-strip{display:grid;grid-template-columns:repeat(3,1fr);background:linear-gradient(135deg,#0a3558,#074a70);color:#fff;border-radius:13px;overflow:hidden;box-shadow:var(--shadow);margin-bottom:18px}.daily-summary-strip>div{padding:17px 22px;text-align:center;border-right:1px solid rgba(255,255,255,.2)}.daily-summary-strip>div:last-child{border-right:0}.daily-summary-strip strong{display:block;font-size:25px}.daily-summary-strip small{text-transform:uppercase;font-weight:800;color:#d9ebf4;letter-spacing:.5px}.division-metrics{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #cfe0e8;border-radius:10px;margin-bottom:15px;overflow:hidden;background:#fbfefe}.division-metrics>div{text-align:center;padding:12px;border-right:1px solid #dce8ed}.division-metrics>div:last-child{border-right:0}.division-metrics strong{display:block;font-size:20px;color:#087b82}.division-metrics small{font-size:10px;text-transform:uppercase;color:#5b7284;font-weight:800}.daily-card.pm-card{border-color:#b9dedf}.daily-card.tw-card{border-color:#bdd8ef}.daily-card.pm-card .card-head{background:#eef9f9}.daily-card.tw-card .card-head{background:#eef6fd}.row-actions{white-space:nowrap;text-align:center}.btn-delete-row{padding:6px 9px;border-radius:7px;border:1px solid #e5aaaa;background:#fff3f3;color:#b52f2f;font-weight:700;cursor:pointer}.btn-delete-row:hover{background:#ffe5e5}.config-note{background:#eaf3f8;border:1px solid #cbdde8;border-radius:10px;padding:12px 14px;margin-bottom:14px;color:#36576d;font-size:12px}
+@media(max-width:1100px){.app{grid-template-columns:210px 1fr}.main{padding:20px}.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}}@media(max-width:760px){.app{display:block}.sidebar{height:auto;position:relative}.nav{display:flex;overflow:auto}.nav-label,.brand small{display:none}.nav button{min-width:150px}.main{padding:15px}.kpis{grid-template-columns:1fr 1fr}.upload-grid{grid-template-columns:1fr}.topbar{display:block}}
+
+/* === PLANNING DDV PREMIUM 3.1 === */
+:root{--bg:#061522;--card:#0b2132;--line:#24445b;--text:#f2f7fb;--muted:#9bb0c0;--navy:#071825;--green:#4ebc35;--blue:#1987e6;--gold:#f1ae17;--purple:#9a4dcc;--cyan:#11b9d2;--shadow:0 12px 34px rgba(0,0,0,.28)}body{background:radial-gradient(circle at 70% 0,#11334a 0,#061522 45%,#04101a 100%);color:var(--text)}.app{grid-template-columns:208px 1fr}.sidebar{background:linear-gradient(180deg,#071725,#06121d);border-right:1px solid #1e3c50;padding:18px 10px}.premium-brand{display:flex;align-items:center;gap:10px;padding:4px 4px 17px}.brand-mark{width:70px;height:70px;border:2px solid #fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:21px}.brand-copy b{font-size:17px}.brand-copy small{color:#8ca6b9}.user-card{display:flex;gap:10px;align-items:center;padding:12px;border:1px solid #26455b;border-radius:10px;background:#0a1e2d;margin:10px 0 16px}.avatar{width:36px;height:36px;border-radius:50%;background:#233d50;display:grid;place-items:center;font-weight:800}.user-card small,.connected{display:block;font-size:11px;color:#9db2c2}.connected{color:#55d64b;margin-top:5px}.nav button{border-radius:7px;color:#d8e4ec}.nav button.active{background:linear-gradient(90deg,#0d5ea8,#0f3f6c);border-left:0;padding-left:13px}.main{padding:0 18px 34px}.topbar{display:none}.page{padding-top:14px}.card{background:linear-gradient(180deg,#0d2537,#091c2a);border-color:#24465d;color:var(--text)}.card-head{border-color:#24465d}.card-head h2,.card-head h3{color:#fff}.small,.field label{color:var(--muted)}.field input,.field select,.field textarea,.table input,.table select,#masterStatusFilter{background:#10283a!important;border-color:#315269!important;color:#fff!important}.btn{background:#102a3d;color:#fff;border-color:#33566d}.btn-primary{background:#0c5d9d}.btn-gold{background:#d99b08;color:#101820}.table-wrap{border-color:#284b62}.table th{background:#12344c;color:#d8e8f2}.table td{border-color:#1d3a4f}.table tr:hover td{background:#10283a}.tab{background:#10283a;color:#cfe0eb;border-color:#315269}.tab.active{background:#176aab}.upload-box{background:#0b2030;border-color:#3c6077}.hero-dashboard{height:196px;background:url('/assets/hero_banner.png') center/cover no-repeat;border:1px solid #294a60;border-radius:0 0 12px 12px;position:relative;display:grid;grid-template-columns:1fr 250px;overflow:hidden;box-shadow:var(--shadow);margin-bottom:14px}.hero-dashboard:before{content:'';position:absolute;inset:0;background:linear-gradient(90deg,rgba(4,18,29,.2),rgba(4,18,29,.48) 55%,rgba(4,18,29,.9))}.hero-overlay,.hero-controls{position:relative;z-index:2}.hero-overlay{display:grid;place-items:center;text-align:center}.hero-logo{font-size:42px;font-weight:900}.hero-overlay h2{font-size:29px;margin:5px 0}.hero-overlay strong{color:#31a6ff;font-size:22px}.hero-controls{padding:15px;background:rgba(4,18,29,.7);display:flex;flex-direction:column;gap:8px}.hero-controls label{font-size:10px;font-weight:800}.hero-controls select{background:#0b2030;color:#fff;border:1px solid #2a4b61;padding:11px;border-radius:8px}.division-buttons{display:grid;gap:8px}.division-buttons button{border:0;border-radius:7px;padding:11px;color:#fff;font-weight:800}.division-buttons button:first-child{background:linear-gradient(90deg,#59c73b,#267622)}.division-buttons button:last-child{background:linear-gradient(90deg,#3c8ff0,#0c5ca8)}.premium-kpis{grid-template-columns:repeat(5,1fr);gap:12px}.kpi.premium{display:flex;align-items:center;gap:14px;background:linear-gradient(145deg,#112a3e,#091d2c);border-color:#31516a;padding:14px}.kpi-icon{font-size:32px;width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.06)}.kpi.premium strong{font-size:30px;margin:0}.dashboard-layout{display:grid;grid-template-columns:minmax(0,1fr) 245px;gap:12px}.division-panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}.division-panel{border:1px solid;border-radius:10px;overflow:hidden;background:#081b29}.division-panel.tw{border-color:#3b8734}.division-panel.pm{border-color:#1674ba}.division-title{display:flex;justify-content:space-between;align-items:center;padding:13px 16px}.division-panel.tw .division-title,.division-panel.tw .mini-head{background:linear-gradient(90deg,#276f23,#174f1c)}.division-panel.pm .division-title,.division-panel.pm .mini-head{background:linear-gradient(90deg,#0e65ad,#0b4479)}.division-title h3{margin:0}.division-title button{background:none;border:0;color:#fff}.division-mini{display:grid;grid-template-columns:repeat(4,1fr);background:#e9edf0;color:#11283a}.division-mini div{text-align:center;padding:12px;border-right:1px solid #cdd5da}.division-mini b{display:block;font-size:20px}.division-mini span{font-size:10px;text-transform:uppercase}.mini-head,.mini-row{display:grid;grid-template-columns:.7fr 1fr .6fr 1.4fr .8fr 1fr;gap:6px;align-items:center}.mini-head{padding:9px 12px;font-size:10px;font-weight:800}.mini-row{padding:10px 12px;border-top:1px solid #1b374b;font-size:11px}.state-dot.ok{color:#63df78}.state-dot.pending{color:#ffbf45}.panel-empty{min-height:240px;display:grid;place-items:center;align-content:center;gap:16px;color:#9bb0c0}.panel-empty button{background:#0c2b40;color:#fff;border:1px solid #3b647e;padding:8px 13px;border-radius:7px}.dashboard-side{display:grid;gap:12px;align-content:start}.side-card{background:linear-gradient(180deg,#0c2232,#081923);border:1px solid #29495e;border-radius:10px;padding:15px}.side-card h3{font-size:14px;margin:0 0 13px;text-transform:uppercase}.side-metric{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px dashed #29495e}.quick button{display:block;width:100%;margin:7px 0;padding:9px;border:0;border-radius:6px;color:#fff;text-align:left;font-weight:700}.quick button:nth-of-type(1){background:#287d27}.quick button:nth-of-type(2){background:#1265a7}.quick button:nth-of-type(3){background:#72419b}.quick button:nth-of-type(4){background:#a56e00}.quick button:nth-of-type(5){background:#263c4d}.history-premium{margin-top:12px}.check{background:#0a2030;border-color:#29495e}@media(max-width:1100px){.app{grid-template-columns:72px 1fr}.brand-copy,.user-card>div:not(.avatar),.nav-label{display:none}.dashboard-layout{grid-template-columns:1fr}.premium-kpis{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.main{padding:0 8px 24px}.hero-dashboard{grid-template-columns:1fr;height:auto}.hero-overlay{min-height:160px}.premium-kpis{grid-template-columns:1fr 1fr}.division-panels{grid-template-columns:1fr}.dashboard-side{grid-template-columns:1fr}.grid2,.upload-grid{grid-template-columns:1fr}.field{min-width:100%}}
+
+
+/* === PREMIUM 3.1: FLOTA, PRODUCTIVIDAD Y AJUSTE VISUAL === */
+.hero-dashboard:before{background:linear-gradient(90deg,rgba(4,18,29,.08),rgba(4,18,29,.42) 28%,rgba(4,18,29,.58) 72%,rgba(4,18,29,.18))}.hero-logo{font-size:34px;letter-spacing:1.5px}.hero-overlay h2{font-size:18px;letter-spacing:3px;color:#dcebf4}.premium-kpis{grid-template-columns:repeat(6,minmax(140px,1fr))}.fleet-strip{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:#2b4b60;border:1px solid #31536a;border-radius:10px;overflow:hidden;margin:12px 0}.fleet-strip>div{background:linear-gradient(160deg,#102b3e,#091d2b);padding:12px;text-align:center}.fleet-strip b{display:block;font-size:22px}.fleet-strip span{font-size:9px;text-transform:uppercase;color:#a7bdcb;font-weight:800}.division-mini{grid-template-columns:repeat(6,1fr)}.metric-accent{color:#ffc94d!important}.util-good{color:#65dc74!important}.util-warn{color:#ffc24a!important}.indicator-table .total-row td{font-weight:800;background:#102b3e}.indicator-table .tw-cell{color:#74de64}.indicator-table .pm-cell{color:#52a9ff}.indicator-table .valle-cell{color:#ffc94d}.mail-frame{height:820px}
+@media(max-width:1450px){.premium-kpis{grid-template-columns:repeat(3,1fr)}.fleet-strip{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:980px){.premium-kpis{grid-template-columns:repeat(2,1fr)}.fleet-strip{grid-template-columns:repeat(2,1fr)}.division-mini{grid-template-columns:repeat(3,1fr)}}
+.daily-premium-title{display:flex;justify-content:space-between;align-items:center}.daily-date-badge{min-width:190px;text-align:right;padding:10px 16px;border:1px solid #31566d;border-radius:10px;background:#0b2638}.daily-date-badge span{display:block;font-size:10px;font-weight:900;color:#8fb3c7;letter-spacing:1px}.daily-date-badge b{display:block;font-size:24px;color:#fff;margin-top:3px}
+
+.whatsapp-novelties{margin-top:22px;border:1px solid #b8ccd8;border-radius:12px;overflow:hidden;background:#fff}.whatsapp-novelties-title{display:flex;justify-content:space-between;align-items:center;background:#0b4266;color:#fff;padding:13px 18px;font-size:20px;font-weight:900}.whatsapp-novelties-title span:last-child{font-size:12px;background:rgba(255,255,255,.16);padding:6px 11px;border-radius:16px}.whatsapp-novelties-table thead{background:#17631b}.whatsapp-novelties-table th{color:#fff}.whatsapp-novelty-badge{display:inline-block;background:#eef4f7;border:1px solid #b8cbd7;color:#0b4266;border-radius:13px;padding:4px 9px;font-weight:900}.whatsapp-empty-novelty{text-align:center;color:#6c8291;padding:18px!important}
+</style>
+
+<style id="premium-v35">
+/* Sidebar más claro y encabezado premium */
+.sidebar{
+  background:linear-gradient(180deg,#203746 0%,#142b39 48%,#0d2230 100%)!important;
+  border-right:1px solid #496372!important;
+}
+.premium-brand-v34{
+  min-height:82px;
+  align-items:flex-start;
+  padding:12px 12px 18px!important;
+  border-bottom:1px solid rgba(255,255,255,.14);
+}
+.premium-brand-v34 .brand-copy b{
+  display:block;
+  font-size:22px!important;
+  line-height:1.05;
+  letter-spacing:.4px;
+  color:#fff;
+}
+.premium-brand-v34 .brand-copy small{
+  display:block;
+  margin-top:7px;
+  font-size:13px;
+  color:#b5c8d4!important;
+}
+.user-card-v34{
+  background:rgba(8,31,45,.62)!important;
+  border-color:#426176!important;
+  padding:12px!important;
+}
+.session-copy{min-width:0;flex:1}
+#localUserProfile{
+  width:100%;
+  appearance:none;
+  border:0;
+  border-bottom:1px solid rgba(255,255,255,.15);
+  background:transparent;
+  color:#fff;
+  font-weight:800;
+  font-size:15px;
+  padding:2px 18px 5px 0;
+  outline:none;
+  cursor:pointer;
+}
+#localUserProfile option{color:#102536;background:#fff}
+#currentRole{margin-top:4px}
+.connected{font-size:10px!important;color:#63dd6b!important}
+
+/* Hero con dinosaurio Trelew + Madryn/ballena integrados */
+.hero-dashboard-v34{
+  height:208px!important;
+  grid-template-columns:minmax(0,1fr) 245px!important;
+  background:url('/assets/hero_banner_v35.png') center/cover no-repeat!important;
+  background-position:center!important;
+}
+.hero-dashboard-v34:before{
+  background:linear-gradient(90deg,
+    rgba(3,17,27,.10) 0%,
+    rgba(3,17,27,.08) 35%,
+    rgba(3,17,27,.10) 65%,
+    rgba(3,17,27,.20) 100%)!important;
+}
+.hero-overlay-v34{
+  display:block!important;
+}
+.hero-identity,.official-logo-panel,.hero-caption{display:none!important}
+.hero-controls{
+  padding:15px;
+  background:rgba(4,18,29,.62)!important;
+  backdrop-filter:blur(2px);
+  border-left:1px solid rgba(255,255,255,.06);
+}
+.hero-controls label{color:#dce8ef;letter-spacing:1px}
+.hero-controls select{background:#0b2030;color:#fff;border:1px solid #2a4b61;padding:11px;border-radius:8px}
+
+/* El Dashboard es explícitamente el resumen del día */
+#page-dashboard:before{
+  content:"RESUMEN DEL DÍA";
+  display:block;
+  margin:1px 0 7px 3px;
+  color:#8fa8b8;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:1.6px;
+}
+@media(max-width:1100px){
+  .premium-brand-v34 .brand-copy{display:block}
+  .session-copy{display:none}
+}
+@media(max-width:760px){
+  .hero-dashboard-v34{grid-template-columns:1fr!important;height:auto!important;background-position:left center!important}
+  .hero-overlay-v34{min-height:170px}
+}
+</style>
+
+
+<style id="premium-v36">
+.premium-kpis{display:block!important;margin:0 0 14px!important}
+.executive-strip{display:grid;grid-template-columns:.85fr .9fr 1.1fr 1.15fr .85fr .9fr 1.55fr;border:1px solid #31546b;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#0e2b3f,#0a2131);box-shadow:0 10px 28px rgba(0,0,0,.24)}
+.executive-metric{min-height:112px;padding:13px 10px;text-align:center;border-right:1px solid #31546b;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+.executive-metric:last-child{border-right:0}.executive-icon{font-size:26px;line-height:1}.executive-metric>b{font-size:29px;line-height:1.05;color:#fff}.executive-metric.utilization>b{color:#ffbd29}.executive-metric small{font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.45px;color:#d3e2ec}.executive-metric>em{font-style:normal;font-size:10px;color:#7fa0b5}
+.executive-metric.base-use{padding:9px 12px}.base-util-mini{width:100%;display:grid;gap:9px;margin-top:4px}.base-util-mini>div{display:grid;grid-template-columns:26px 48px 1fr;align-items:center;gap:5px}.base-util-mini span{font-weight:900;color:#69dc4c}.base-util-mini .pm span{color:#32a8ff}.base-util-mini b{font-size:14px}.base-util-mini i{height:9px;background:#15384c;border-radius:10px;overflow:hidden;border:1px solid #3e6074}.base-util-mini em{display:block;height:100%;background:linear-gradient(90deg,#36bd25,#8be96f);border-radius:8px}.base-util-mini .pm em{background:linear-gradient(90deg,#087ccc,#37bdff)}
+.division-panels{grid-template-columns:1fr 1fr!important;gap:14px!important}.premium-base{border-radius:12px!important}.premium-base .division-title{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center}.premium-base .division-title .pill{font-size:10px}.base-kpi-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:9px;padding:12px;background:linear-gradient(180deg,#0b2334,#081b29);border-bottom:1px solid #284a60}.base-kpi{min-height:132px;border:1px solid #28516d;border-radius:9px;background:linear-gradient(145deg,#102e44,#0a2132);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;text-align:center}.base-kpi>span{font-size:31px}.base-kpi>b{font-size:24px}.base-kpi small{font-size:10px;text-transform:uppercase;font-weight:800;color:#b5c9d7}.division-panel.tw .base-kpi{border-color:#2f6932}.division-panel.pm .base-kpi{border-color:#185b8a}.utilization-ring .ring{width:76px;height:76px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--ring-color) var(--ring),#17354a 0);position:relative}.utilization-ring .ring:before{content:'';position:absolute;inset:9px;border-radius:50%;background:#0b2334}.utilization-ring .ring b{position:relative;z-index:1;font-size:18px}.mini-table{border-top:0}.mini-row{min-height:39px}.dashboard-layout{grid-template-columns:minmax(0,1fr) 245px!important}.history-premium{grid-column:1/-1}
+@media(max-width:1350px){.executive-strip{grid-template-columns:repeat(4,1fr)}.executive-metric:nth-child(4){border-right:0}.executive-metric{border-bottom:1px solid #31546b}.executive-metric:nth-last-child(-n+3){border-bottom:0}.executive-metric.base-use{grid-column:span 2}.base-kpi-grid{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:950px){.division-panels{grid-template-columns:1fr!important}.executive-strip{grid-template-columns:repeat(2,1fr)}.executive-metric{border-right:1px solid #31546b!important}.executive-metric:nth-child(even){border-right:0!important}.executive-metric.base-use{grid-column:span 2}.dashboard-layout{grid-template-columns:1fr!important}}
+</style>
+
+
+<style id="premium-v37">
+/* V3.7: identidad por base y gráficos comparativos */
+.division-panel.premium-base.tw{
+  background:linear-gradient(180deg,#0c2d1b 0%,#071d16 100%)!important;
+  border-color:#3f9d3a!important;
+  box-shadow:0 12px 28px rgba(34,128,48,.20)!important;
+}
+.division-panel.premium-base.pm{
+  background:linear-gradient(180deg,#0a3155 0%,#071d32 100%)!important;
+  border-color:#1687d4!important;
+  box-shadow:0 12px 28px rgba(20,115,189,.22)!important;
+}
+.division-panel.tw .division-title{
+  background:linear-gradient(90deg,#2e8c2a,#175b22)!important;
+}
+.division-panel.pm .division-title{
+  background:linear-gradient(90deg,#147fc6,#07508f)!important;
+}
+.division-panel.tw .base-kpi-grid{background:linear-gradient(180deg,#123a23,#092317)!important}
+.division-panel.pm .base-kpi-grid{background:linear-gradient(180deg,#0e3a60,#08243c)!important}
+.division-panel.tw .base-kpi{background:linear-gradient(145deg,#194929,#0d2e1c)!important;border-color:#3d7f41!important}
+.division-panel.pm .base-kpi{background:linear-gradient(145deg,#174b73,#0b2d49)!important;border-color:#2c78aa!important}
+.division-panel.tw .mini-head{background:linear-gradient(90deg,#287828,#184f1e)!important}
+.division-panel.pm .mini-head{background:linear-gradient(90deg,#126eb4,#084a80)!important}
+.division-panel.tw .mini-row{background:rgba(7,31,20,.78)!important}
+.division-panel.pm .mini-row{background:rgba(6,28,47,.80)!important}
+.base-chart{padding:11px 14px 13px;border-bottom:1px solid rgba(255,255,255,.10)}
+.division-panel.tw .base-chart{background:linear-gradient(90deg,rgba(44,123,40,.22),rgba(15,54,28,.14))}
+.division-panel.pm .base-chart{background:linear-gradient(90deg,rgba(12,101,169,.24),rgba(8,54,91,.16))}
+.base-chart-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;color:#dcecf5;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.8px}
+.chart-row{display:grid;grid-template-columns:62px 1fr 48px;gap:9px;align-items:center;margin:7px 0;font-size:10px;color:#c8dce8}
+.chart-track{height:9px;background:rgba(255,255,255,.10);border-radius:8px;overflow:hidden;border:1px solid rgba(255,255,255,.08)}
+.chart-fill{height:100%;border-radius:8px;box-shadow:0 0 12px currentColor}
+.division-panel.tw .chart-fill{background:linear-gradient(90deg,#62db50,#2d9a32);color:#62db50}
+.division-panel.pm .chart-fill{background:linear-gradient(90deg,#43b5ff,#147fd0);color:#43b5ff}
+.chart-value{text-align:right;font-weight:900;color:#fff}
+.base-kpi .icon-svg{font-size:31px;line-height:1}
+.utilization-ring .ring{box-shadow:0 0 20px rgba(0,0,0,.25)}
+@media(max-width:950px){.chart-row{grid-template-columns:55px 1fr 44px}}
+</style>
+
+
+<style id="daily-premium-v38">
+/* SALIDA DIARIA PREMIUM - continuidad visual con Inicio */
+#page-daily{padding-top:12px}
+#page-daily>.card:first-child{
+  background:linear-gradient(135deg,#0b2234,#071925)!important;
+  border-color:#31566f!important;
+  box-shadow:0 12px 30px rgba(0,0,0,.25)!important;
+}
+#page-daily>.card:first-child .card-body{padding:14px 18px!important}
+#page-daily .filters{align-items:end}
+#page-daily .btn-mail,#page-daily .btn-pdf,#page-daily .btn-primary{min-height:42px}
+.daily-premium-title{margin:3px 0 12px;padding-left:3px}
+.daily-premium-title h2{margin:0;color:#fff;font-size:26px;letter-spacing:.4px}
+.daily-premium-title p{margin:4px 0 0;color:#91aabe;font-size:12px}
+.daily-summary-premium{
+ display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:12px;margin:0 0 15px
+}
+.daily-total-kpi{
+ min-height:96px;border-radius:12px;border:1px solid #2b516a;
+ display:flex;align-items:center;gap:15px;padding:14px 18px;
+ background:linear-gradient(145deg,#102b40,#081b29);box-shadow:0 8px 20px rgba(0,0,0,.18)
+}
+.daily-total-kpi.blue{background:linear-gradient(145deg,#0e3155,#081e35);border-color:#245d96}
+.daily-total-kpi.green{background:linear-gradient(145deg,#123c2a,#09271c);border-color:#2d703c}
+.daily-total-kpi.amber{background:linear-gradient(145deg,#483508,#241e0b);border-color:#856113}
+.daily-total-kpi.cyan{background:linear-gradient(145deg,#083b49,#06232d);border-color:#14728a}
+.daily-total-icon{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;font-size:29px;background:rgba(255,255,255,.07)}
+.daily-total-kpi b{display:block;color:#fff;font-size:29px;line-height:1}
+.daily-total-kpi span{display:block;margin-top:6px;color:#bfd1dd;font-size:10px;font-weight:900;letter-spacing:.7px;text-transform:uppercase}
+.daily-total-kpi small{display:block;margin-top:3px;color:#6f94aa;font-size:10px}
+.daily-base-card{
+ margin:0 0 15px;border-radius:13px;overflow:hidden;background:#071b29;
+ box-shadow:0 12px 30px rgba(0,0,0,.23)
+}
+.daily-base-card.tw-premium{border:1px solid #399031;box-shadow:0 0 0 1px rgba(65,151,50,.15),0 12px 30px rgba(0,0,0,.23)}
+.daily-base-card.pm-premium{border:1px solid #1681d1;box-shadow:0 0 0 1px rgba(22,129,209,.16),0 12px 30px rgba(0,0,0,.23)}
+.daily-base-head{display:flex;align-items:center;justify-content:space-between;padding:12px 17px;color:#fff}
+.tw-premium .daily-base-head{background:linear-gradient(90deg,#195c1d,#0c3517)}
+.pm-premium .daily-base-head{background:linear-gradient(90deg,#075fa6,#073458)}
+.daily-base-head h2{margin:0;font-size:19px;letter-spacing:.4px}.daily-base-head .pin{margin-right:7px}
+.daily-base-badge{padding:7px 13px;border-radius:17px;background:rgba(255,255,255,.12);font-weight:800;font-size:11px}
+.daily-base-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;padding:14px 16px 10px}
+.daily-base-kpi{min-height:82px;border-radius:10px;border:1px solid;display:flex;align-items:center;gap:13px;padding:12px 14px}
+.tw-premium .daily-base-kpi{background:linear-gradient(145deg,#123c24,#09291a);border-color:#2d7136}
+.pm-premium .daily-base-kpi{background:linear-gradient(145deg,#0d3154,#081f37);border-color:#245e95}
+.daily-base-kpi .ico{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-size:25px;background:rgba(255,255,255,.08)}
+.daily-base-kpi b{display:block;color:#fff;font-size:24px}.daily-base-kpi span{display:block;margin-top:3px;color:#bcd0dc;font-size:9px;font-weight:900;text-transform:uppercase}
+.daily-util-wrap{margin-left:auto;display:flex;align-items:center;gap:10px}.daily-ring{--p:0;--ring:#21a4ff;width:58px;height:58px;border-radius:50%;background:conic-gradient(var(--ring) calc(var(--p)*1%),rgba(255,255,255,.08) 0);display:grid;place-items:center;position:relative}
+.daily-ring:after{content:'';width:42px;height:42px;border-radius:50%;background:#092132;position:absolute}.tw-premium .daily-ring:after{background:#0b2918}.daily-ring strong{position:relative;z-index:2;color:#fff;font-size:12px}
+.daily-section-label{padding:0 17px 8px;color:#9eb6c6;font-size:10px;font-weight:900;letter-spacing:1px}
+.daily-base-card .table-wrap{margin:0 16px 14px;border-radius:9px;border-color:#284b62}
+.daily-base-card .table{min-width:1040px}.daily-base-card .table th{color:#fff!important}
+.tw-premium .table th{background:#185a20!important}.pm-premium .table th{background:#075b9d!important}
+.daily-base-card .table td{background:#081d2b!important;color:#eef6fb!important;border-color:#18394e!important;padding:10px 9px}
+.daily-base-card .table tr:nth-child(even) td{background:#0a2232!important}
+.daily-base-card .cyo-block{margin:14px 16px;border-top:1px solid #d29b1b;padding-top:12px}
+.daily-base-card .cyo-block .table-wrap{margin:0}
+@media(max-width:1200px){.daily-summary-premium{grid-template-columns:repeat(2,1fr)}.daily-base-kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:720px){.daily-summary-premium,.daily-base-kpis{grid-template-columns:1fr}}
+</style>
+
+<style id="whatsapp-v46">
+.whatsapp-sheet{background:#fff;color:#102b3e;border-radius:14px;padding:18px;border:1px solid #bfd0da}.whatsapp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.whatsapp-head h2{margin:0;color:#0b4266}.whatsapp-date{font-size:18px;font-weight:900;color:#0b4266}.whatsapp-table{width:100%;border-collapse:collapse;font-size:14px}.whatsapp-table th{padding:11px;background:#0b4266;color:#fff;text-align:left}.whatsapp-table td{padding:10px;border-bottom:1px solid #dbe4e9}.whatsapp-table input{width:100%;padding:9px;border:1px solid #b9cbd5;border-radius:7px}.whatsapp-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.whatsapp-summary>div{background:#f3f8fb;border:1px solid #bfd0da;border-radius:10px;padding:12px;text-align:center}.whatsapp-summary b{display:block;font-size:25px;color:#0b4266}.whatsapp-summary small{font-size:11px;font-weight:900;color:#61798a;text-transform:uppercase}.whatsapp-division{display:grid;grid-template-columns:1fr auto;align-items:center;gap:16px;font-size:18px;font-weight:900;color:#fff;padding:9px 12px;margin-top:15px}.whatsapp-division-main{display:flex;align-items:center;gap:18px;min-width:0}.whatsapp-division-name{font-size:20px;white-space:nowrap}.whatsapp-trucks{font-size:12px;background:rgba(255,255,255,.16);padding:5px 10px;border-radius:14px;white-space:nowrap}.whatsapp-bultos{font-size:12px;background:rgba(0,0,0,.16);padding:5px 10px;border-radius:14px;white-space:nowrap;text-align:right}.whatsapp-division.tw{background:#1d7426}.whatsapp-division.pm{background:#126aa9}.whatsapp-cyo{background:#fff5df!important;border-top:3px solid #e2a51b}.whatsapp-cyo-tag{display:inline-block;margin-left:7px;background:#e39c0c;color:#fff;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:900}.whatsapp-mode-buttons{display:flex;gap:10px;align-items:center}.whatsapp-mode-buttons .active{background:#126aa9;color:#fff;border-color:#126aa9}.whatsapp-driver-table{min-width:1450px;font-size:12px}.whatsapp-driver-table th,.whatsapp-driver-table td{padding:9px 8px}.whatsapp-driver-table th{white-space:nowrap}.whatsapp-driver-table td:nth-child(9){min-width:230px}
+</style></head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand premium-brand premium-brand-v34">
+  <div class="brand-copy"><b>PLANNING DDV</b><small>Control de distribución</small></div>
+</div>
+<div class="user-card user-card-v34">
+  <div id="currentAvatar" class="avatar">FM</div>
+  <div class="session-copy">
+    <select id="localUserProfile" aria-label="Perfil de esta PC" onchange="setLocalProfile(this.value)">
+      <option value="fernando">Fernando</option>
+      <option value="kevin">Kevin</option>
+      <option value="nestor">Néstor</option>
+    </select>
+    <small id="currentRole">Administrador</small>
+    <span class="connected">● Perfil local</span>
+  </div>
+</div>
+    <div class="nav-label">OPERACIÓN</div>
+    <div class="nav">
+      <button data-page="dashboard" class="active">⌂ Inicio</button>
+      <button data-page="planning">▣ Planning CHESS</button>
+      <button data-page="daily">▤ Salida diaria</button>
+      <button data-page="whatsapp">▦ WhatsApp salida</button>
+      <button data-page="novelties">● Novedades</button>
+      <button data-page="recargas">◉ Recargas</button>
+      <button data-page="kms">⌁ KMS Sierra Grande</button>
+      <div class="nav-label">GESTIÓN</div>
+      <button data-page="history">▥ Histórico</button>
+      <button data-page="mail">✉ Enviar mail</button>
+      <button data-page="config">⚙ Configuración</button>
+    </div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div><div class="eyebrow">Distribuidora del Valle · Control de distribución</div><h1 id="pageTitle">Resumen ejecutivo</h1><div id="pageSubtitle" class="subtitle">Visión diaria consolidada de Trelew y Puerto Madryn.</div></div><div class="topbar-right"><img class="company-logo" src="/assets/ddv_logo.png" alt="Distribuidora del Valle"><div class="version">Versión premium 5.4</div></div></div>
+
+    <section id="page-dashboard" class="page active">
+<div class="hero-dashboard hero-dashboard-v34"><div class="hero-overlay hero-overlay-v34" aria-hidden="true"></div><div class="hero-controls"><label>FECHA OPERATIVA</label><select id="dashboardDate"></select><div class="division-buttons"><button onclick="showPage('planning');setPlanningDivision('TRELEW')">TRELEW</button><button onclick="showPage('planning');setPlanningDivision('PUERTO MADRYN')">PUERTO MADRYN</button></div></div></div>
+<div id="dashboardKpis" class="kpis premium-kpis"></div>
+<div class="dashboard-layout"><div class="dashboard-center"><div id="divisionSummary" class="division-panels"></div><div class="history-premium card"><div class="card-head"><div><h2>Histórico rápido</h2><div class="small">Últimos días cargados</div></div><button class="btn" onclick="showPage('history')">Ver histórico</button></div><div class="card-body"><div id="dashboardHistory" class="empty">Se completa a partir de las cargas diarias.</div></div></div></div><aside class="dashboard-side"><div class="side-card"><h3>Resumen general</h3><div id="dashboardSideSummary"></div></div><div class="side-card"><h3>Estado del día</h3><div id="closureChecks" class="checklist"></div></div><div class="side-card quick"><h3>Acciones rápidas</h3><button onclick="showPage('planning')">＋ Nueva salida</button><button onclick="showPage('daily')">▤ Salida diaria</button><button onclick="showPage('novelties')">● Novedades</button><button onclick="showPage('recargas')">◉ Recargas</button><button onclick="showPage('mail')">✉ Enviar mail</button></div></aside></div>
+</section>
+
+    <section id="page-planning" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Fecha operativa</label><input id="planningDate" type="date"></div><div class="field"><label>División a completar</label><select id="planningDivisionFilter" onchange="setPlanningDivision(this.value)"><option value="TODAS">TW + PM</option><option value="TRELEW">Trelew</option><option value="PUERTO MADRYN">Puerto Madryn</option></select></div><button class="btn" onclick="loadPlanning()">Abrir fecha</button><button class="btn" onclick="copyLastAssignments()">Copiar última asignación</button><div class="spacer"></div><button id="saveDraftBtn" class="btn btn-primary" onclick="savePlanning(false)">Guardar borrador TW + PM</button><button id="confirmPlanningBtn" class="btn btn-gold" onclick="savePlanning(true)">Confirmar TW + PM</button></div><div id="divisionStatus" class="toolbar" style="margin-top:14px"></div></div>
+      <div class="grid2">
+        <div class="card"><div class="card-head"><h2>Carga de archivos CHESS</h2><span class="pill dark">Etapa 1</span></div><div class="card-body"><div class="upload-grid"><div class="upload-box"><b>Archivo Trelew</b><small>Estructura TW.xlsx</small><input id="twFile" type="file" accept=".xlsx"></div><div class="upload-box"><b>Archivo Puerto Madryn</b><small>Estructura PM.xlsx</small><input id="pmFile" type="file" accept=".xlsx"></div></div><div class="toolbar" style="margin-top:14px"><button class="btn btn-gold" onclick="importChess()">Importar / actualizar fecha</button><span class="small">Al reemplazar archivos se regeneran unidades, PDV y bultos sin borrar asignaciones manuales existentes.</span></div><div id="importStatus"></div></div></div>
+        <div class="card"><div class="card-head"><h2>Resumen de importación</h2></div><div class="card-body"><div id="importSummary" class="checklist"><div class="empty">Todavía no se validaron archivos.</div></div></div></div>
+      </div>
+      <div class="card"><div class="card-head"><div><h2>Asignación operativa</h2><div class="small">Se muestran las salidas reales importadas. La misma formación puede repetirse en otro camión. Cada persona debe mantener su función durante la fecha y no puede ocupar dos puestos en una misma salida.</div></div><span class="pill dark">Etapa 2</span></div><div class="card-body"><div id="planningMessage"></div><div id="planningTable"></div></div></div>
+    </section>
+
+    <section id="page-daily" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Fecha</label><select id="dailyDate"></select></div><div class="field"><label>División</label><select id="dailyDivision"><option>TODAS</option><option>PUERTO MADRYN</option><option>TRELEW</option></select></div><button class="btn btn-primary" onclick="loadDaily()">Consultar</button><button class="btn btn-mail" onclick="openDailyMail()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="m4 6 8 7 8-7"/></svg>Enviar mail</button><button class="btn" onclick="showPage('whatsapp');syncWhatsappFromDaily()">▦ WhatsApp</button><button class="btn btn-pdf" onclick="downloadDailyPdf()"><svg viewBox="0 0 24 24" fill="none" stroke="#d51f26" stroke-width="2"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/><path d="M8 16h8M8 12h5"/></svg>PDF</button><button class="btn" onclick="downloadBackup()">💾 Backup</button></div></div><div id="dailyContent"></div>
+    </section>
+
+
+    <section id="page-whatsapp" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Fecha de salida</label><select id="whatsappDate"></select></div><div class="field"><label>División</label><select id="whatsappDivision"><option>TODAS</option><option>TRELEW</option><option>PUERTO MADRYN</option></select></div><button class="btn btn-primary" onclick="loadWhatsapp()">Consultar</button><div class="whatsapp-mode-buttons"><button id="waModeDeposito" class="btn active" onclick="setWhatsappMode('deposito')">Salida para depósito</button><button id="waModeChoferes" class="btn" onclick="setWhatsappMode('choferes')">Salida para choferes</button></div><button id="waSaveBtn" class="btn btn-gold" onclick="saveWhatsapp()">Guardar observaciones</button><button class="btn" onclick="downloadWhatsappImage()">🖼 Descargar imagen</button></div></div>
+      <div class="card"><div class="card-head"><div><h2 id="whatsappTitle">Salida para depósito</h2><div id="whatsappHelp" class="small">Camión, planilla y localidad vienen de Salida diaria. Solo se editan las observaciones previas.</div></div></div><div class="card-body"><div id="whatsappMessage"></div><div id="whatsappContent"></div></div></div>
+    </section>
+
+    <section id="page-novelties" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Fecha</label><select id="noveltyDate"></select></div><div class="field"><label>División</label><select id="noveltyDivision"><option>TODAS</option><option>PUERTO MADRYN</option><option>TRELEW</option></select></div><button class="btn btn-primary" onclick="loadNovelties()">Consultar personal sin salida</button><button class="btn btn-gold" onclick="saveNovelties()">Guardar novedades</button></div></div><div class="card"><div class="card-head"><h2>Personal no asignado</h2><span class="pill warn">Clasificación obligatoria</span></div><div class="card-body"><div id="noveltyMessage"></div><div id="noveltyTable"></div></div></div>
+    </section>
+
+    <section id="page-recargas" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Desde</label><input id="recargaStart" type="date"></div><div class="field"><label>Hasta</label><input id="recargaEnd" type="date"></div><div class="field"><label>División</label><select id="recargaDivision"><option>TODAS</option><option>PUERTO MADRYN</option><option>TRELEW</option></select></div><button class="btn btn-primary" onclick="loadRecargas()">Consultar</button><button class="btn" onclick="setRecargaPeriod2625()">Usar período 26–25</button></div></div>
+      <div class="card"><div class="card-head"><div><h2>Resumen por empleado</h2><div class="small">Suma de recargas y cantidad de días distintos dentro del rango seleccionado.</div></div><span id="recargaPeriod" class="pill dark"></span></div><div class="card-body"><div id="recargaSummary"></div></div></div>
+      <div class="card"><div class="card-head"><div><h2>Detalle de recargas</h2><div class="small">Cada imputación conserva la fecha exacta, el dominio y la localidad donde se realizó.</div></div></div><div class="card-body"><div id="recargaDetail"></div></div></div>
+    </section>
+
+    <section id="page-kms" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Desde</label><input id="kmsStart" type="date"></div><div class="field"><label>Hasta</label><input id="kmsEnd" type="date"></div><div class="field"><label>División</label><select id="kmsDivision"><option>TODAS</option><option>TRELEW</option><option>PUERTO MADRYN</option></select></div><button class="btn btn-primary" onclick="loadKms()">Consultar</button></div></div>
+      <div class="card"><div class="card-head"><div><h2>KMS Sierra Grande</h2><div class="small">Se habilita exclusivamente para rutas cuya localidad sea Sierra Grande.</div></div></div><div class="card-body"><div id="kmsSummary"></div></div></div>
+      <div class="card"><div class="card-head"><h2>Detalle de kilómetros</h2></div><div class="card-body"><div id="kmsDetail"></div></div></div>
+    </section>
+
+    <section id="page-history" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Desde</label><input id="historyStart" type="date"></div><div class="field"><label>Hasta</label><input id="historyEnd" type="date"></div><div class="field"><label>Base</label><select id="historyDivision" onchange="syncHistoryLocalities()"><option>TODAS</option><option>TRELEW</option><option>PUERTO MADRYN</option></select></div><div class="field"><label>Localidad</label><select id="historyLocality"><option value="">Todas</option></select></div><div class="field"><label>Empleado</label><input id="historyEmployee" placeholder="Todos"></div><button class="btn btn-primary" onclick="loadHistory()">Consultar</button></div></div>
+      <div class="card"><div class="card-head"><div><h2>Flota y productividad</h2><div class="small">Registro diario de utilización de flota y drop size por base y total DDV.</div></div><div class="toolbar"><button class="btn btn-pdf" onclick="historyExport('indicators','pdf')">PDF</button><button class="btn btn-mail" onclick="historyExport('indicators','mail')">Mail</button></div></div><div class="card-body"><div id="historyIndicators"></div></div></div>
+      <div class="card"><div class="card-head"><h2>Salidas históricas</h2><div class="toolbar"><button class="btn btn-pdf" onclick="historyExport('routes','pdf')">PDF</button><button class="btn btn-mail" onclick="historyExport('routes','mail')">Mail</button></div></div><div class="card-body"><div id="historyRoutes"></div></div></div>
+      <div class="card"><div class="card-head"><h2>Histórico de novedades</h2><div class="toolbar"><button class="btn btn-pdf" onclick="historyExport('novelties','pdf')">PDF</button><button class="btn btn-mail" onclick="historyExport('novelties','mail')">Mail</button></div></div><div class="card-body"><div id="historyNovelties"></div></div></div>
+    </section>
+
+    <section id="page-mail" class="page">
+      <div class="card"><div class="card-body filters"><div class="field"><label>Fecha</label><select id="mailDate"></select></div><div class="field"><label>División</label><select id="mailDivision"><option>TODAS</option><option>PUERTO MADRYN</option><option>TRELEW</option></select></div><div class="field" style="min-width:220px"><label>Para</label><input id="mailTo" value="Planning"></div><div class="field" style="min-width:220px"><label>CC</label><input id="mailCc" placeholder="opcional"></div><div class="field" style="min-width:360px"><label>Asunto</label><input id="mailSubject"></div><button class="btn" onclick="loadMailPreview()">Actualizar vista</button><button class="btn btn-mail" onclick="openMail(false)">Abrir en Outlook</button></div></div><div class="card"><div class="card-head"><h2>Vista previa ejecutiva</h2></div><div class="card-body"><iframe id="mailPreview" class="mail-frame"></iframe></div></div>
+    </section>
+
+    <section id="page-config" class="page">
+      <div class="card"><div class="card-head"><div><h2>Configuración operativa</h2><div class="small">Base de personal por división, roles habilitados, orden de localidades y preferencias por dominio.</div></div><div class="toolbar"><label class="small" for="masterStatusFilter">Ver</label><select id="masterStatusFilter" onchange="state.masterStatus=this.value;renderMaster()" style="padding:9px 11px;border:1px solid #cbd7e0;border-radius:8px;background:#fff"><option value="ACTIVE">Solo activos</option><option value="ALL">Todos</option></select><button class="btn btn-primary" onclick="saveCurrentMaster()">Guardar configuración</button></div></div><div class="card-body"><div class="tabs"><button id="masterTabEmployees" class="tab active" onclick="setMasterTab('employees')">Personal operativo</button><button id="masterTabFilters" class="tab hidden" onclick="setMasterTab('employee_filters')">Filtros por localidad</button><button id="masterTabLocalities" class="tab" onclick="setMasterTab('localities')">Localidades</button><button id="masterTabDomain" class="tab" onclick="setMasterTab('domain_people')">Opciones por dominio</button></div><div class="config-note">Una persona puede estar habilitada como chofer, ayudante o ambas funciones. La habilitación se controla por división: el personal de Trelew puede operar en cualquiera de las localidades de Trelew y el personal de Puerto Madryn en cualquiera de las localidades de Puerto Madryn.</div><div id="masterMessage"></div><div id="masterTable"></div><button class="btn" style="margin-top:12px" onclick="addMasterRow()">+ Agregar fila</button></div></div>
+    </section>
+  </main>
+</div>
+<div id="modalBack" class="modal-back"><div class="modal"><div class="modal-head"><b id="modalTitle">Detalle</b><button class="close" onclick="closeModal()">×</button></div><div id="modalBody" class="modal-body"></div></div></div>
+<script>
+const state={dates:[],routes:[],options:null,planningDivision:'TODAS',masters:null,masterTab:'employees',masterStatus:'ACTIVE',noveltyRows:[],historyLocalities:[],whatsappMode:'deposito'};
+
+const localProfiles={
+  fernando:{name:'Fernando',initials:'FM',role:'Administrador'},
+  kevin:{name:'Kevin',initials:'K',role:'Trelew'},
+  nestor:{name:'Néstor',initials:'N',role:'Puerto Madryn'}
+};
+function setLocalProfile(key){
+  const p=localProfiles[key]||localProfiles.fernando;
+  localStorage.setItem('planningDDVLocalProfile',key);
+  const sel=q('localUserProfile');
+  if(sel&&sel.value!==key)sel.value=key;
+  if(q('currentAvatar'))q('currentAvatar').textContent=p.initials;
+  if(q('currentRole'))q('currentRole').textContent=p.role;
+}
+function loadLocalProfile(){
+  const key=localStorage.getItem('planningDDVLocalProfile')||'fernando';
+  setLocalProfile(key);
+}
+
+const pageInfo={dashboard:['Resumen ejecutivo','Visión diaria consolidada de Trelew y Puerto Madryn.'],planning:['Planning CHESS','Importación real de TW/PM y asignación operativa por fecha.'],daily:['Salida diaria','Detalle consolidado de camiones, dotación y localidades.'],whatsapp:['WhatsApp salida','Planilla previa para choferes con observaciones operativas.'],novelties:['Novedades de personal','Clasificación del personal activo que no participa de la salida.'],recargas:['Recargas 26–25','Seguimiento individual por período operativo.'],kms:['KMS Sierra Grande','Registro de kilómetros de las salidas a Sierra Grande.'],history:['Histórico','Consulta por fecha, localidad, empleado y novedad.'],mail:['Mail operativo','Vista previa ejecutiva y apertura directa en Outlook.'],config:['Configuración','Administración de personal, roles, localidades y dominios.']};
+function q(id){return document.getElementById(id)}
+function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function fmt(v,d=0){const n=Number(v||0);return n.toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d})}
+function statusBox(text,type='info'){return `<div class="status ${type}">${esc(text)}</div>`}
+async function api(url,options={}){const r=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const type=r.headers.get('content-type')||'';const data=type.includes('application/json')?await r.json():await r.text();if(!r.ok)throw new Error(data.error||data||`Error ${r.status}`);return data}
+async function fileBase64(input){const f=input.files[0];if(!f)return null;return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(f)})}
+function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));q(`page-${name}`).classList.add('active');document.querySelectorAll('.nav button[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));q('pageTitle').textContent=pageInfo[name][0];q('pageSubtitle').textContent=pageInfo[name][1];if(name==='dashboard')loadDashboard();if(name==='planning')loadPlanning();if(name==='daily')loadDaily();if(name==='whatsapp')loadWhatsapp();if(name==='novelties')loadNovelties();if(name==='recargas')loadRecargas();if(name==='kms')loadKms();if(name==='history')loadHistory();if(name==='mail')loadMailPreview();if(name==='config')loadMasters()}
+document.querySelectorAll('.nav button[data-page]').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
+function populateDateSelects(){['dashboardDate','dailyDate','whatsappDate','noveltyDate','mailDate'].forEach(id=>{const el=q(id);const current=el.value;el.innerHTML=state.dates.map(d=>`<option value="${d}">${new Date(d+'T00:00:00').toLocaleDateString('es-AR')}</option>`).join('');if(current&&state.dates.includes(current))el.value=current});if(state.dates.length){if(!q('planningDate').value)q('planningDate').value=state.dates[0];q('historyEnd').value=state.dates[0];q('historyStart').value=state.dates[state.dates.length-1]}}
+async function refreshDates(){const d=await api('/api/dates');state.dates=d.dates;populateDateSelects()}
+function kpisHtml(s){return [['Unidades',fmt(s.units),'Camiones planificados'],['PDV',fmt(s.pdv),'Puntos de venta'],['Bultos',fmt(s.bultos,1),'Volumen total'],['Hectolitros',fmt(s.hl,1),'Volumen CHESS'],['Recargas',fmt(s.recargas),'Imputaciones individuales']].map(x=>`<div class="kpi"><span>${x[0]}</span><strong>${x[1]}</strong><small>${x[2]}</small></div>`).join('')}
+function fleetMetrics(rows,capacity){const used=rows.length,pdv=rows.reduce((a,r)=>a+Number(r.pdv||0),0),b=rows.reduce((a,r)=>a+Number(r.bultos||0),0);return {used,capacity,free:Math.max(capacity-used,0),util:capacity?used/capacity*100:0,pdv,b,drop:pdv?b/pdv:0}}
+async function loadDashboard(){
+ const d=q('dashboardDate').value||state.dates[0];
+ if(!d){q('dashboardKpis').innerHTML='<div class="empty">Todavía no hay jornadas cargadas.</div>';q('divisionSummary').innerHTML='';return}
+ const data=await api(`/api/routes?date=${d}`),sum=data.summary||{};
+ const total=data.routes.length;
+ const operational=data.routes.filter(r=>!isCyoRoute(r));
+ const assigned=operational.filter(r=>r.driver||r.helper1||r.helper2).length;
+ const complete=operational.length?Math.round(operational.filter(r=>r.driver&&r.locality).length/operational.length*100):0;
+ const twRows=operational.filter(r=>r.division==='TRELEW');
+ const pmRows=operational.filter(r=>r.division==='PUERTO MADRYN');
+ const tw=fleetMetrics(twRows,6),pm=fleetMetrics(pmRows,5),valle=fleetMetrics(operational,11);
+ const utilBase=`<div class="base-util-mini"><div><span>TW</span><b>${fmt(tw.util,1)}%</b><i><em style="width:${Math.min(tw.util,100)}%"></em></i></div><div class="pm"><span>PM</span><b>${fmt(pm.util,1)}%</b><i><em style="width:${Math.min(pm.util,100)}%"></em></i></div></div>`;
+ q('dashboardKpis').innerHTML=`<div class="executive-strip">
+   <div class="executive-metric"><span class="executive-icon">🚛</span><b>11</b><small>Flota total</small><em>TW 6 + PM 5</em></div>
+   <div class="executive-metric"><span class="executive-icon">🚚</span><b>${valle.used}</b><small>Flota utilizada</small><em>${valle.free} sin asignación</em></div>
+   <div class="executive-metric utilization"><span class="executive-icon">◔</span><b>${fmt(valle.util,1)}%</b><small>Utilización de flota</small><em>Sobre 11 unidades</em></div>
+   <div class="executive-metric"><span class="executive-icon">📦</span><b>${fmt(valle.b,1)}</b><small>Bultos a repartir</small><em>Sin CYO</em></div>
+   <div class="executive-metric"><span class="executive-icon">🏪</span><b>${fmt(valle.pdv)}</b><small>PDV</small><em>Total del día</em></div>
+   <div class="executive-metric"><span class="executive-icon">🎯</span><b>${fmt(valle.drop,1)}</b><small>Drop size</small><em>Bultos / PDV</em></div>
+   <div class="executive-metric base-use"><small>Utilización por base</small>${utilBase}</div>
+ </div>`;
+ q('divisionSummary').innerHTML=['TRELEW','PUERTO MADRYN'].map(div=>{
+   const rows=div==='TRELEW'?twRows:pmRows,m=div==='TRELEW'?tw:pm,cls=div==='TRELEW'?'tw':'pm';
+   const color=div==='TRELEW'?'#52c83c':'#1696ef';
+   const pdvShare=valle.pdv?m.pdv/valle.pdv*100:0;
+   const bShare=valle.b?m.b/valle.b*100:0;
+   return `<div class="division-panel premium-base ${cls}">
+    <div class="division-title"><h3>⌖ ${div}</h3><span class="pill dark">${rows.length} unidades</span><button onclick="showPage('daily');q('dailyDivision').value='${div}';loadDaily()">Ver detalle ›</button></div>
+    <div class="base-kpi-grid">
+      <div class="base-kpi"><span class="icon-svg">🚚</span><b>${m.used}</b><small>Camiones<br>sin CYO</small></div>
+      <div class="base-kpi"><span class="icon-svg">🏪</span><b>${fmt(m.pdv)}</b><small>PDV</small></div>
+      <div class="base-kpi"><span class="icon-svg">📦</span><b>${fmt(m.b,1)}</b><small>Bultos</small></div>
+      <div class="base-kpi"><span class="icon-svg">🎯</span><b>${fmt(m.drop,1)}</b><small>Drop size</small></div>
+      <div class="base-kpi utilization-ring" style="--ring:${Math.min(m.util,100)*3.6}deg;--ring-color:${color}"><div class="ring"><b>${fmt(m.util,1)}%</b></div><small>Utilización<br>flota</small></div>
+    </div>
+    <div class="base-chart"><div class="base-chart-title"><span>Participación sobre DDV</span><span>${div==='TRELEW'?'Base TW':'Base PM'}</span></div>
+      <div class="chart-row"><span>PDV</span><div class="chart-track"><div class="chart-fill" style="width:${Math.min(pdvShare,100)}%"></div></div><span class="chart-value">${fmt(pdvShare,1)}%</span></div>
+      <div class="chart-row"><span>Bultos</span><div class="chart-track"><div class="chart-fill" style="width:${Math.min(bShare,100)}%"></div></div><span class="chart-value">${fmt(bShare,1)}%</span></div>
+    </div>
+    ${rows.length?`<div class="mini-table"><div class="mini-head"><span>UNIDAD</span><span>DOMINIO</span><span>PDV</span><span>LOCALIDAD</span><span>BULTOS</span><span>ESTADO</span></div>${rows.slice(0,8).map(r=>`<div class="mini-row"><span>${esc(r.unit_id)}</span><b>${esc(r.domain)}</b><span>${fmt(r.pdv)}</span><span>${esc(r.locality||'Pendiente')}</span><span>${fmt(r.bultos,1)}</span><span class="state-dot ${r.driver&&r.locality?'ok':'pending'}">${r.driver&&r.locality?'✓ Completo':'Pendiente'}</span></div>`).join('')}</div>`:`<div class="panel-empty">No hay información cargada para la fecha seleccionada.<button onclick="showPage('planning')">Ir a Planning CHESS</button></div>`}
+   </div>`
+ }).join('');
+ q('dashboardSideSummary').innerHTML=`<div class="side-metric"><span>🚛 Flota total</span><b>11</b></div><div class="side-metric"><span>🚚 Flota utilizada</span><b>${valle.used}</b></div><div class="side-metric"><span>◔ Utilización</span><b>${fmt(valle.util,1)}%</b></div><div class="side-metric"><span>🏪 PDV</span><b>${fmt(valle.pdv)}</b></div><div class="side-metric"><span>📦 Bultos</span><b>${fmt(valle.b,1)}</b></div><div class="side-metric"><span>🎯 Drop size</span><b>${fmt(valle.drop,1)}</b></div><div class="side-metric total"><span>✓ Completitud</span><b>${complete}%</b></div>`;
+ q('closureChecks').innerHTML=[['Choferes pendientes',sum.pending_driver],['Localidades pendientes',sum.pending_locality],['Personal sin clasificar',sum.unassigned]].map(([l,v])=>`<div class="check ${Number(v)===0?'good':'bad'}"><span>${l}</span><b>${fmt(v)}</b></div>`).join('');
+}
+async function importChess(){const d=q('planningDate').value;if(!d){q('importStatus').innerHTML=statusBox('Debe seleccionar una fecha.','error');return}q('importStatus').innerHTML=statusBox('Procesando archivos…','info');try{const payload={date:d,tw:await fileBase64(q('twFile')),pm:await fileBase64(q('pmFile'))};const r=await api('/api/import',{method:'POST',body:JSON.stringify(payload)});q('importStatus').innerHTML=statusBox(`Carga finalizada: ${r.processed} salidas reales. Nuevas ${r.inserted}; actualizadas ${r.updated}; eliminadas por reemplazo ${r.removed||0}.`,'ok');q('importSummary').innerHTML=`<div class="check good"><span>Unidades TW</span><b>${r.by_division.TRELEW||0}</b></div><div class="check good"><span>Unidades PM</span><b>${r.by_division['PUERTO MADRYN']||0}</b></div><div class="check good"><span>Total importado</span><b>${r.processed||0}</b></div><div class="check good"><span>Duplicados</span><b>0</b></div><div class="check good"><span>Estado</span><span class="pill ok">Importado correctamente</span></div>`;await refreshDates();await loadPlanning()}catch(e){q('importStatus').innerHTML=statusBox(e.message,'error')}}
+async function loadPlanning(){const d=q('planningDate').value||state.dates[0];if(!d)return;const [routes,opt]=await Promise.all([api(`/api/routes?date=${d}`),api(`/api/options?date=${d}`)]);state.routes=routes.routes;state.options=opt;renderPlanning();q('planningMessage').innerHTML=state.routes.length?statusBox(`${state.routes.length} unidades cargadas para ${new Date(d+'T00:00:00').toLocaleDateString('es-AR')}.`,'info'):statusBox('No hay unidades importadas para esta fecha.','warn')}
+function setPlanningDivision(div){collectVisiblePlanning();state.planningDivision=div;const f=q('planningDivisionFilter');if(f&&f.value!==div)f.value=div;renderPlanning();updatePlanningActions()}
+function eligible(route,role){const all=(state.options?.employees||[]).filter(p=>p.division===route.division&&Number(role==='driver'?p.can_driver:p.can_helper)===1&&!state.options.novelty_names.includes(p.name));const pref=(state.options?.preferred||[]).filter(x=>x.domain===route.domain&&x.role===(role==='driver'?'CHOFER':'AYUDANTE')).map(x=>x.employee_name);return [...all].sort((a,b)=>{const ai=pref.indexOf(a.name),bi=pref.indexOf(b.name);if(ai>=0||bi>=0)return (ai<0?999:ai)-(bi<0?999:bi);return a.name.localeCompare(b.name)}).map(x=>x.name)}
+function optionList(options,current,blank='Sin asignar'){const arr=[...new Set([...(current?[current]:[]),...options])];return `<option value="">${blank}</option>`+arr.map(x=>`<option value="${esc(x)}" ${x===current?'selected':''}>${esc(x)}</option>`).join('')}
+function divisionLabel(div){return div==='TRELEW'?'Trelew':div==='PUERTO MADRYN'?'Puerto Madryn':'TW + PM'}
+function divisionState(div){const rows=state.routes.filter(r=>r.division===div);if(!rows.length)return {label:'Sin archivo',cls:'dark'};const confirmed=rows.filter(r=>r.status==='CONFIRMADO').length;if(confirmed===rows.length)return {label:`Confirmado · ${confirmed}/${rows.length}`,cls:'ok'};if(confirmed>0)return {label:`Parcial · ${confirmed}/${rows.length}`,cls:'warn'};return {label:`Borrador · 0/${rows.length}`,cls:'warn'}}
+function updatePlanningActions(){const label=divisionLabel(state.planningDivision);q('saveDraftBtn').textContent=`Guardar borrador ${label}`;q('confirmPlanningBtn').textContent=`Confirmar ${label}`;const tw=divisionState('TRELEW'),pm=divisionState('PUERTO MADRYN');q('divisionStatus').innerHTML=`<span class="small"><b>Estado por división:</b></span><span class="pill ${tw.cls}">Trelew: ${tw.label}</span><span class="pill ${pm.cls}">Puerto Madryn: ${pm.label}</span>`}
+function renderPlanning(){
+  const rows=state.planningDivision==='TODAS'?state.routes:state.routes.filter(r=>r.division===state.planningDivision);
+  updatePlanningActions();
+  if(!rows.length){q('planningTable').innerHTML='<div class="empty">No hay unidades para esta selección.</div>';return}
+  q('planningTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Div.</th><th>Unidad</th><th>Dominio</th><th>PDV</th><th>Bultos</th><th>Rendición</th><th>Chofer</th><th>Ayudante 1</th><th>Ayudante 2</th><th>Localidad</th><th>Observaciones</th><th>Recargas</th><th>KMS</th><th>Estado</th></tr></thead><tbody>${rows.map(r=>{
+    const locs=(state.options?.localities||[]).filter(l=>l.division===r.division).map(l=>l.name);
+    const div=r.division==='TRELEW'?'TW':'PM';
+    const status=r.status==='CONFIRMADO'?'<span class="pill ok">Confirmado</span>':'<span class="pill warn">Borrador</span>';
+    return `<tr data-route="${r.id}"><td class="locked">${div}</td><td class="locked">${esc(r.unit_id)}</td><td class="locked">${esc(r.domain)}</td><td class="num">${fmt(r.pdv)}</td><td class="num">${fmt(r.bultos,1)}</td><td><input data-f="rendicion" value="${esc(r.rendicion)}" placeholder="N° planilla"></td><td><select data-f="driver">${optionList(eligible(r,'driver'),r.driver)}</select></td><td><select data-f="helper1">${optionList(eligible(r,'helper'),r.helper1,'Sin ayudante')}</select></td><td><select data-f="helper2">${optionList(eligible(r,'helper'),r.helper2,'Sin ayudante')}</select></td><td><select data-f="locality" onchange="changeRouteLocality(${r.id},this.value)">${optionList(locs,r.locality,'Seleccionar')}</select></td><td><input data-f="observations" value="${esc(r.observations)}" placeholder="Observaciones"></td><td><input data-f="recarga_qty" type="number" min="0" max="10" value="${Number(r.recarga_qty||0)}" style="min-width:65px"></td><td><input data-f="kms" type="number" min="0" step="1" value="${Number(r.kms||0)}" ${String(r.locality||'').toUpperCase()==='SIERRA GRANDE'?'':'disabled'} title="Solo se habilita para Sierra Grande" style="min-width:75px"></td><td>${status}</td></tr>`
+  }).join('')}</tbody></table></div>`
+}
+function collectVisiblePlanning(){document.querySelectorAll('#planningTable tr[data-route]').forEach(tr=>{const r=state.routes.find(x=>x.id===Number(tr.dataset.route));tr.querySelectorAll('[data-f]').forEach(el=>r[el.dataset.f]=el.type==='number'?Number(el.value||0):el.value)});return state.routes}
+function changeRouteLocality(id,value){collectVisiblePlanning();const route=state.routes.find(r=>r.id===Number(id));if(route){route.locality=value;if(String(value).toUpperCase()!=='SIERRA GRANDE')route.kms=0}renderPlanning()}
+function localDuplicateErrors(routes){const used={};const errs=[];routes.forEach(r=>{const domain=(r.domain||'').trim();const inRoute={};[['driver','CHOFER'],['helper1','AYUDANTE'],['helper2','AYUDANTE']].forEach(([f,role])=>{const n=(r[f]||'').trim();if(!n)return;if(inRoute[n]){errs.push(`${n} ya ocupa el puesto ${inRoute[n]} en ${domain}; no puede tener dos funciones dentro del mismo camión.`);return}else inRoute[n]=role;if(used[n]){if(used[n].role!==role)errs.push(`${n} ya está asignado como ${used[n].role} en esta fecha y no puede cambiar a ${role}.`);else if(used[n].domains.has(domain))errs.push(`${n} ya está asignado como ${role} en el camión ${domain}.`);else used[n].domains.add(domain)}else used[n]={role,domains:new Set([domain])}})});return [...new Set(errs)]}
+async function savePlanning(confirm){collectVisiblePlanning();const errs=localDuplicateErrors(state.routes);if(errs.length){q('planningMessage').innerHTML=statusBox(errs.join('\n'),'error');return}const selected=state.planningDivision==='TODAS'?state.routes:state.routes.filter(r=>r.division===state.planningDivision);if(!selected.length){q('planningMessage').innerHTML=statusBox('No hay salidas para la división seleccionada.','error');return}try{const d=q('planningDate').value;const r=await api('/api/routes/save',{method:'POST',body:JSON.stringify({date:d,division:state.planningDivision,routes:selected,confirm})});state.routes=r.routes;const label=divisionLabel(state.planningDivision);q('planningMessage').innerHTML=statusBox(confirm?`${label} confirmado correctamente. La otra división conserva su estado.`:`Borrador de ${label} guardado correctamente. La otra división conserva su estado.`,'ok');renderPlanning();await refreshDates()}catch(e){q('planningMessage').innerHTML=statusBox(e.message,'error')}}
+async function copyLastAssignments(){try{const d=q('planningDate').value;const r=await api('/api/routes/copy-last',{method:'POST',body:JSON.stringify({date:d})});q('planningMessage').innerHTML=statusBox(`Se aplicó la última dotación conocida en ${r.copied} unidades. Revisá la asignación antes de confirmar.`,'ok');await loadPlanning()}catch(e){q('planningMessage').innerHTML=statusBox(e.message,'error')}}
+function tableHtml(headers,rows){if(!rows.length)return '<div class="empty">Sin registros.</div>';return `<div class="table-wrap"><table class="table"><thead><tr>${headers.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(v=>`<td>${v??''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`}
+function isCyoRoute(r){return /(^|\s)CYO($|\s)/i.test(`${r.domain||''} ${r.locality||''} ${r.observations||''}`)}
+function dailyRouteTable(rows){return tableHtml(['Dominio','Planilla','Chofer','Ayudante 1','Ayudante 2','PDV','Bultos','Localidad','KMS','Observaciones'],rows.map(r=>[`<b>${esc(r.domain)}</b>`,esc(r.rendicion),esc(r.driver),esc(r.helper1),esc(r.helper2),fmt(r.pdv),fmt(r.bultos,1),esc(r.locality),Number(r.kms||0)?`<b>${fmt(r.kms)}</b>`:'-',esc(r.observations)]))}
+function dailyTotals(rows){return {units:rows.length,pdv:rows.reduce((a,r)=>a+Number(r.pdv||0),0),bultos:rows.reduce((a,r)=>a+Number(r.bultos||0),0)}}
+async function loadDaily(){
+ const d=q('dailyDate').value||state.dates[0],div=q('dailyDivision').value;
+ const data=await api(`/api/routes?date=${d}&division=${encodeURIComponent(div)}`);
+ const operational=data.routes.filter(r=>!isCyoRoute(r));
+ const total=dailyTotals(operational);
+ const completed=operational.length?Math.round(operational.filter(r=>r.driver&&r.locality).length/operational.length*100):0;
+ let html=`<div class="daily-premium-title"><div><h2>SALIDA DIARIA</h2><p>Resumen de unidades y distribución minorista</p></div><div class="daily-date-badge"><span>FECHA DE SALIDA</span><b>${isoToAr(d)}</b></div></div>
+ <div class="daily-summary-premium">
+  <div class="daily-total-kpi blue"><div class="daily-total-icon">🚚</div><div><b>${fmt(total.units)}</b><span>Camiones sin CYO</span><small>Consolidado DDV</small></div></div>
+  <div class="daily-total-kpi green"><div class="daily-total-icon">🏪</div><div><b>${fmt(total.pdv)}</b><span>PDV</span><small>Total del día</small></div></div>
+  <div class="daily-total-kpi amber"><div class="daily-total-icon">📦</div><div><b>${fmt(total.bultos,1)}</b><span>Bultos</span><small>A repartir</small></div></div>
+  <div class="daily-total-kpi cyan"><div class="daily-total-icon">🎯</div><div><b>${completed}%</b><span>Completitud</span><small>Chofer y localidad</small></div></div>
+ </div>`;
+ ['TRELEW','PUERTO MADRYN'].forEach(name=>{
+   const rows=data.routes.filter(r=>r.division===name);
+   if(!rows.length)return;
+   const minorista=rows.filter(r=>!isCyoRoute(r)),cyo=rows.filter(isCyoRoute);
+   const m=dailyTotals(minorista),capacity=name==='TRELEW'?6:5,util=capacity?m.units/capacity*100:0;
+   const cls=name==='TRELEW'?'tw-premium':'pm-premium';
+   let sections='';
+   if(minorista.length)sections+=`<div class="daily-section-label">DISTRIBUCIÓN MINORISTA</div>${dailyRouteTable(minorista)}`;
+   if(cyo.length)sections+=`<div class="daily-block cyo-block"><div class="daily-block-head"><div><span class="daily-kicker">CUENTA Y ORDEN</span><h3>CYO · ${name}</h3></div><span class="pill warn">${cyo.length} unidades</span></div>${dailyRouteTable(cyo)}</div>`;
+   html+=`<section class="daily-base-card ${cls}">
+    <div class="daily-base-head"><h2><span class="pin">📍</span>${name}</h2><span class="daily-base-badge">${rows.length} unidades totales</span></div>
+    <div class="daily-base-kpis">
+      <div class="daily-base-kpi"><span class="ico">🚚</span><div><b>${fmt(m.units)}</b><span>Camiones sin CYO</span></div></div>
+      <div class="daily-base-kpi"><span class="ico">🏪</span><div><b>${fmt(m.pdv)}</b><span>PDV</span></div></div>
+      <div class="daily-base-kpi"><span class="ico">📦</span><div><b>${fmt(m.bultos,1)}</b><span>Bultos</span></div></div>
+      <div class="daily-base-kpi"><span class="ico">◔</span><div><b>${fmt(util,1)}%</b><span>Utilización de flota</span></div><div class="daily-util-wrap"><div class="daily-ring" style="--p:${Math.min(util,100)};--ring:${name==='TRELEW'?'#61cf48':'#22a5ff'}"><strong>${fmt(util,0)}%</strong></div></div></div>
+    </div>${sections}
+   </section>`;
+ });
+ q('dailyContent').innerHTML=data.routes.length?html:'<div class="card"><div class="empty">Sin salidas para la selección.</div></div>';
+}
+async function openDailyMail(){const d=q('dailyDate').value||state.dates[0],div=q('dailyDivision').value;if(!d)return;try{await api('/api/mail/open',{method:'POST',body:JSON.stringify({date:d,division:div,to:'Planning',cc:'',subject:dailySubject(),send_now:false})});alert('Se abrió el mail en Outlook con el grupo Planning como destinatario.')}catch(e){alert(e.message)}}
+function downloadDailyPdf(){const d=q('dailyDate').value||state.dates[0],div=q('dailyDivision').value;if(!d)return;window.location.href=`/api/export/daily.pdf?date=${encodeURIComponent(d)}&division=${encodeURIComponent(div)}`}
+function downloadBackup(){window.location.href=`/api/backup/download?_=${Date.now()}`}
+async function loadNovelties(){const d=q('noveltyDate').value||state.dates[0],div=q('noveltyDivision').value;const data=await api(`/api/unassigned?date=${d}&division=${encodeURIComponent(div)}`);state.noveltyRows=data.rows;renderNovelties(data.reasons)}
+function renderNovelties(reasons=['FRANCO','ART','VACACIONES','AUSENTE','SUSPENSIÓN','PERMISO GREMIAL']){if(!state.noveltyRows.length){q('noveltyTable').innerHTML='<div class="empty">Toda la dotación activa está asignada o clasificada.</div>';return}q('noveltyTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Empleado</th><th>División</th><th>Base / localidad</th><th>Rol habilitado</th><th>Novedad</th><th>Detalle</th></tr></thead><tbody>${state.noveltyRows.map((r,i)=>`<tr><td class="locked">${esc(r.employee_name)}</td><td>${esc(r.division)}</td><td>${esc(r.base_locality)}</td><td>${esc(r.role)}</td><td><select data-n-reason="${i}"><option value="">Seleccionar</option>${reasons.map(x=>`<option ${x===r.reason?'selected':''}>${x}</option>`).join('')}</select></td><td><input data-n-note="${i}" value="${esc(r.notes)}"></td></tr>`).join('')}</tbody></table></div>`}
+async function saveNovelties(){document.querySelectorAll('[data-n-reason]').forEach(el=>state.noveltyRows[Number(el.dataset.nReason)].reason=el.value);document.querySelectorAll('[data-n-note]').forEach(el=>state.noveltyRows[Number(el.dataset.nNote)].notes=el.value);const missing=state.noveltyRows.filter(r=>!r.reason);if(missing.length){q('noveltyMessage').innerHTML=statusBox(`Falta definir la novedad de ${missing.length} empleados.`,'error');return}try{await api('/api/novelties/save',{method:'POST',body:JSON.stringify({date:q('noveltyDate').value,rows:state.noveltyRows})});q('noveltyMessage').innerHTML=statusBox('Novedades guardadas correctamente.','ok');await loadNovelties()}catch(e){q('noveltyMessage').innerHTML=statusBox(e.message,'error')}}
+function isoToAr(d){if(!d)return '';return new Date(d+'T00:00:00').toLocaleDateString('es-AR')}
+function period2625(reference){const ref=new Date((reference||new Date().toISOString().slice(0,10))+'T00:00:00');let start,end;if(ref.getDate()>=26){start=new Date(ref.getFullYear(),ref.getMonth(),26);end=new Date(ref.getFullYear(),ref.getMonth()+1,25)}else{start=new Date(ref.getFullYear(),ref.getMonth()-1,26);end=new Date(ref.getFullYear(),ref.getMonth(),25)}const iso=x=>`${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`;return [iso(start),iso(end)]}
+function setRecargaPeriod2625(){const ref=q('recargaEnd').value||q('recargaStart').value||new Date().toISOString().slice(0,10);const [start,end]=period2625(ref);q('recargaStart').value=start;q('recargaEnd').value=end;loadRecargas()}
+async function loadRecargas(){const start=q('recargaStart').value,end=q('recargaEnd').value,div=q('recargaDivision').value;if(!start||!end){alert('Debe seleccionar Desde y Hasta.');return}try{const data=await api(`/api/recargas?start=${start}&end=${end}&division=${encodeURIComponent(div)}`);q('recargaPeriod').textContent=data.label;q('recargaSummary').innerHTML=tableHtml(['Empleado','Roles realizados','División','Total recargas','Días con recarga'],data.summary.map(r=>[esc(r.employee_name),esc((r.roles||'').replaceAll(',',' / ')),esc(r.division),`<b>${fmt(r.recargas)}</b>`,fmt(r.dias_con_recarga)]));q('recargaDetail').innerHTML=tableHtml(['Fecha','Empleado','Rol','División','Dominio','Localidad','Cantidad'],data.detail.map(r=>[isoToAr(r.recarga_date),esc(r.employee_name),esc(r.role),esc(r.division),`<b>${esc(r.domain)}</b>`,esc(r.locality),`<b>${fmt(r.quantity)}</b>`]))}catch(e){q('recargaSummary').innerHTML=statusBox(e.message,'error');q('recargaDetail').innerHTML=''}}
+
+async function loadKms(){const start=q('kmsStart').value||'1900-01-01',end=q('kmsEnd').value||'2999-12-31',div=q('kmsDivision').value;try{const data=await api(`/api/kms?start=${start}&end=${end}&division=${encodeURIComponent(div)}`);q('kmsSummary').innerHTML=tableHtml(['Chofer','División','Viajes Sierra Grande','KMS acumulados'],data.summary.map(r=>[esc(r.driver||'Sin chofer'),esc(r.division),fmt(r.trips),`<b>${fmt(r.kms)}</b>`]));q('kmsDetail').innerHTML=tableHtml(['Fecha','División','Dominio','Planilla','Chofer','Ayudante 1','Ayudante 2','Localidad','KMS'],data.detail.map(r=>[isoToAr(r.planning_date),esc(r.division),`<b>${esc(r.domain)}</b>`,esc(r.rendicion),esc(r.driver),esc(r.helper1),esc(r.helper2),esc(r.locality),`<b>${fmt(r.kms)}</b>`]))}catch(e){q('kmsSummary').innerHTML=statusBox(e.message,'error');q('kmsDetail').innerHTML=''}}
+async function ensureHistoryLocalities(){if(state.historyLocalities.length)return;try{const m=await api('/api/masters');state.historyLocalities=(m.localities||[]).filter(x=>Number(x.active)!==0)}catch(e){state.historyLocalities=[]}}
+async function syncHistoryLocalities(){await ensureHistoryLocalities();const div=q('historyDivision').value,current=q('historyLocality').value;const locs=state.historyLocalities.filter(x=>div==='TODAS'||x.division===div).map(x=>x.name).sort();q('historyLocality').innerHTML='<option value="">Todas</option>'+[...new Set(locs)].map(x=>`<option value="${esc(x)}" ${x===current?'selected':''}>${esc(x)}</option>`).join('')}
+function historyParams(){return new URLSearchParams({start:q('historyStart').value||'1900-01-01',end:q('historyEnd').value||'2999-12-31',division:q('historyDivision').value,locality:q('historyLocality').value,employee:q('historyEmployee').value})}
+function historyExport(section,mode){const params=historyParams();params.set('section',section);if(mode==='pdf'){window.location.href='/api/history/export.pdf?'+params}else{api('/api/history/mail',{method:'POST',body:JSON.stringify(Object.fromEntries(params))}).then(()=>alert('Borrador abierto en Outlook.')).catch(e=>alert(e.message))}}
+async function loadHistory(){const params=new URLSearchParams({start:q('historyStart').value||'1900-01-01',end:q('historyEnd').value||'2999-12-31',division:q('historyDivision').value,locality:q('historyLocality').value,employee:q('historyEmployee').value});const data=await api('/api/history?'+params);q('historyIndicators').innerHTML=tableHtml(['Fecha','Base','Flota reparto','Flota total','Sin asignación','Utilización','PDV','Bultos','Drop size'],data.indicators.map(r=>[isoToAr(r.date),`<b class="${r.division==='TRELEW'?'tw-cell':r.division==='PUERTO MADRYN'?'pm-cell':'valle-cell'}">${esc(r.division)}</b>`,fmt(r.fleet_used),fmt(r.fleet_total),fmt(r.fleet_free),fmt(r.utilization,1)+'%',fmt(r.pdv),fmt(r.bultos,1),`<b>${fmt(r.drop_size,1)}</b>`]));q('historyRoutes').innerHTML=tableHtml(['Fecha','División','Localidad','Dominio','Chofer','Ayudante 1','Ayudante 2','PDV','Bultos','KMS','Estado'],data.routes.map(r=>[isoToAr(r.planning_date),esc(r.division),esc(r.locality),esc(r.domain),esc(r.driver),esc(r.helper1),esc(r.helper2),fmt(r.pdv),fmt(r.bultos,1),fmt(r.kms||0),esc(r.status)]));q('historyNovelties').innerHTML=tableHtml(['Fecha','Empleado','División','Rol','Novedad','Detalle'],data.novelties.map(r=>[r.novelty_date,esc(r.employee_name),esc(r.division),esc(r.role),`<b>${esc(r.reason)}</b>`,esc(r.notes)]))}
+
+function syncWhatsappFromDaily(){const d=q('dailyDate').value||state.dates[0];if(d)q('whatsappDate').value=d;q('whatsappDivision').value=q('dailyDivision').value||'TODAS';loadWhatsapp()}
+function setWhatsappMode(mode){state.whatsappMode=mode;q('waModeDeposito').classList.toggle('active',mode==='deposito');q('waModeChoferes').classList.toggle('active',mode==='choferes');q('waSaveBtn').style.display=mode==='deposito'?'inline-flex':'none';q('whatsappTitle').textContent=mode==='deposito'?'Salida para depósito':'Salida para choferes';q('whatsappHelp').textContent=mode==='deposito'?'Camión, planilla y localidad vienen de Salida diaria. Solo se editan las observaciones previas.':'Formación completa de cada salida, sin KMS, lista para compartir con los choferes.';loadWhatsapp()}
+async function loadWhatsapp(){
+ const d=q('whatsappDate').value||state.dates[0],div=q('whatsappDivision').value||'TODAS';if(!d)return;
+ const data=await api(`/api/whatsapp?date=${d}&division=${encodeURIComponent(div)}`);const rows=data.rows||[];
+ const distAll=rows.filter(r=>!r.is_cyo),cyoAll=rows.filter(r=>r.is_cyo),bultosDist=distAll.reduce((a,r)=>a+Number(r.bultos||0),0);
+ if(state.whatsappMode==='choferes'){
+   const noveltyData=await api(`/api/novelties?date=${d}`);
+   let noveltyRows=(noveltyData.rows||[]).filter(n=>div==='TODAS'||n.division===div);
+   noveltyRows.sort((a,b)=>{const order={'TRELEW':0,'PUERTO MADRYN':1};return (order[a.division]??9)-(order[b.division]??9)||String(a.employee_name||'').localeCompare(String(b.employee_name||''))});
+   let out=`<div class="whatsapp-sheet"><div class="whatsapp-head"><div><h2>SALIDA DIARIA · CHOFERES</h2><div>Formación operativa, localidades y detalle de salida</div></div><div class="whatsapp-date">${isoToAr(d)}</div></div><div class="whatsapp-summary"><div><b>${distAll.length}</b><small>Camiones Distribución</small></div><div><b>${cyoAll.length}</b><small>Camiones CYO</small></div><div><b>${fmt(Math.round(bultosDist),0)}</b><small>Bultos Distribución</small></div></div>`;
+   for(const name of ['TRELEW','PUERTO MADRYN']){const rr=rows.filter(r=>r.division===name),dist=rr.filter(r=>!r.is_cyo),cyo=rr.filter(r=>r.is_cyo),bultos=dist.reduce((a,r)=>a+Number(r.bultos||0),0);if(!rr.length)continue;out+=`<div class="whatsapp-division ${name==='TRELEW'?'tw':'pm'}"><div class="whatsapp-division-main"><div class="whatsapp-division-name">${name}</div><div class="whatsapp-trucks">${dist.length} Distribución + ${cyo.length} CYO</div></div><div class="whatsapp-bultos">${fmt(Math.round(bultos),0)} bultos Distribución</div></div><div class="table-wrap"><table class="whatsapp-table whatsapp-driver-table"><thead><tr><th>Dominio</th><th>Planilla</th><th>Chofer</th><th>Ayudante 1</th><th>Ayudante 2</th><th>PDV</th><th>Bultos</th><th>Localidad</th><th>Observaciones</th></tr></thead><tbody>${rr.map(r=>`<tr class="${r.is_cyo?'whatsapp-cyo':''}"><td><b>${esc(r.domain)}</b>${r.is_cyo?'<span class="whatsapp-cyo-tag">CYO</span>':''}</td><td>${esc(r.rendicion)}</td><td>${esc(r.driver)}</td><td>${esc(r.helper1)}</td><td>${esc(r.helper2)}</td><td>${fmt(r.pdv,0)}</td><td>${fmt(r.bultos,1)}</td><td>${esc(r.locality)}</td><td>${esc(r.observations||'')}</td></tr>`).join('')}</tbody></table></div>`}
+   out+=`<div class="whatsapp-novelties"><div class="whatsapp-novelties-title"><span>NOVEDADES DEL DÍA</span><span>${noveltyRows.length} registros</span></div><div class="table-wrap"><table class="whatsapp-table whatsapp-novelties-table"><thead><tr><th>Empleado</th><th>División</th><th>Rol habilitado</th><th>Novedad</th><th>Detalle</th></tr></thead><tbody>${noveltyRows.length?noveltyRows.map(n=>`<tr><td><b>${esc(n.employee_name)}</b></td><td>${esc(n.division)}</td><td>${esc(n.role)}</td><td><span class="whatsapp-novelty-badge">${esc(n.reason)}</span></td><td>${esc(n.notes||'')}</td></tr>`).join(''):'<tr><td colspan="5" class="whatsapp-empty-novelty">Sin novedades registradas para la fecha.</td></tr>'}</tbody></table></div></div>`;
+   out+='</div>';q('whatsappContent').innerHTML=(rows.length||noveltyRows.length)?out:'<div class="empty">Sin salidas ni novedades para la fecha.</div>';return;
+ }
+ let out=`<div class="whatsapp-sheet"><div class="whatsapp-head"><div><h2>SALIDA DIARIA · DEPÓSITO</h2><div>Observaciones previas a la salida</div></div><div class="whatsapp-date">${isoToAr(d)}</div></div><div class="whatsapp-summary"><div><b>${distAll.length}</b><small>Camiones Distribución</small></div><div><b>${cyoAll.length}</b><small>Camiones CYO</small></div><div><b>${fmt(Math.round(bultosDist),0)}</b><small>Bultos Distribución</small></div></div>`;
+ for(const name of ['TRELEW','PUERTO MADRYN']){const rr=rows.filter(r=>r.division===name),dist=rr.filter(r=>!r.is_cyo),cyo=rr.filter(r=>r.is_cyo),bultos=dist.reduce((a,r)=>a+Number(r.bultos||0),0);if(!rr.length)continue;out+=`<div class="whatsapp-division ${name==='TRELEW'?'tw':'pm'}"><div class="whatsapp-division-main"><div class="whatsapp-division-name">${name}</div><div class="whatsapp-trucks">${dist.length} Distribución + ${cyo.length} CYO</div></div><div class="whatsapp-bultos">${fmt(Math.round(bultos),0)} bultos Distribución</div></div><div class="table-wrap"><table class="whatsapp-table"><thead><tr><th>Camión</th><th>Planilla</th><th>Localidad</th><th>Observaciones</th></tr></thead><tbody>${rr.map(r=>`<tr class="${r.is_cyo?'whatsapp-cyo':''}" data-id="${r.id}"><td><b>${esc(r.domain)}</b>${r.is_cyo?'<span class="whatsapp-cyo-tag">CYO</span>':''}</td><td>${esc(r.rendicion)}</td><td>${esc(r.locality)}</td><td><input class="wa-obs" value="${esc(r.whatsapp_observation||'')}" placeholder=""></td></tr>`).join('')}</tbody></table></div>`}out+='</div>';q('whatsappContent').innerHTML=rows.length?out:'<div class="empty">Sin salidas para la fecha.</div>'
+}
+async function saveWhatsapp(){if(state.whatsappMode!=='deposito')return;const d=q('whatsappDate').value||state.dates[0],div=q('whatsappDivision').value||'TODAS';const rows=[...document.querySelectorAll('#whatsappContent tr[data-id]')].map(tr=>({id:Number(tr.dataset.id),whatsapp_observation:tr.querySelector('.wa-obs').value}));await api('/api/whatsapp/save',{method:'POST',body:JSON.stringify({date:d,division:div,rows})});q('whatsappMessage').innerHTML='<div class="status ok">Observaciones guardadas correctamente.</div>';setTimeout(()=>q('whatsappMessage').innerHTML='',2500)}
+function downloadWhatsappImage(){const d=q('whatsappDate').value||state.dates[0],div=q('whatsappDivision').value||'TODAS';if(!d)return;const endpoint=state.whatsappMode==='choferes'?'/api/export/whatsapp-choferes.png':'/api/export/whatsapp.png';window.location.href=`${endpoint}?date=${encodeURIComponent(d)}&division=${encodeURIComponent(div)}`}
+
+async function loadMailPreview(){const d=q('mailDate').value||state.dates[0],div=q('mailDivision').value;if(!d)return;const label=div==='TODAS'?'TW + PM':div==='TRELEW'?'Trelew':'Puerto Madryn';q('mailTo').value=q('mailTo').value||'Planning';q('mailSubject').value=`Salida diaria DDV - ${new Date(d+'T00:00:00').toLocaleDateString('es-AR')} - ${label}`;q('mailPreview').src=`/api/mail/preview?date=${d}&division=${encodeURIComponent(div)}&_=${Date.now()}`}
+async function openMail(sendNow){try{await api('/api/mail/open',{method:'POST',body:JSON.stringify({date:q('mailDate').value,division:q('mailDivision').value,to:q('mailTo').value||'Planning',cc:q('mailCc').value,subject:q('mailSubject').value,send_now:sendNow})});alert('Borrador abierto en Outlook.')}catch(e){alert(e.message)}}
+async function loadMasters(){state.masters=await api('/api/masters');renderMaster()}
+function setMasterTab(tab){state.masterTab=tab;['Employees','Filters','Localities','Domain'].forEach(x=>q(`masterTab${x}`).classList.remove('active'));q(tab==='employees'?'masterTabEmployees':tab==='employee_filters'?'masterTabFilters':tab==='localities'?'masterTabLocalities':'masterTabDomain').classList.add('active');renderMaster()}
+function masterRowsWithIndex(){const all=state.masters?.[state.masterTab]||[];return all.map((r,i)=>({r,i})).filter(x=>state.masterStatus==='ALL'||Number(x.r.active)!==0)}
+function renderMaster(){if(!state.masters)return;const items=masterRowsWithIndex();
+if(state.masterTab==='employees')q('masterTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Código</th><th>Empleado</th><th>División</th><th>Puede ser chofer</th><th>Puede ser ayudante</th><th>Activo</th><th>Acción</th></tr></thead><tbody>${items.map(({r,i})=>`<tr><td><input data-m="employee_code" data-i="${i}" value="${esc(r.employee_code)}"></td><td><input data-m="name" data-i="${i}" value="${esc(r.name)}"></td><td><select data-m="division" data-i="${i}"><option ${r.division==='PUERTO MADRYN'?'selected':''}>PUERTO MADRYN</option><option ${r.division==='TRELEW'?'selected':''}>TRELEW</option></select></td><td><input data-m="can_driver" data-i="${i}" type="checkbox" ${Number(r.can_driver)?'checked':''}></td><td><input data-m="can_helper" data-i="${i}" type="checkbox" ${Number(r.can_helper)?'checked':''}></td><td><input data-m="active" data-i="${i}" type="checkbox" ${Number(r.active)?'checked':''}></td><td class="row-actions"><button class="btn-delete-row" onclick="deleteMasterRow(${i})">Eliminar</button></td></tr>`).join('')}</tbody></table></div>`;
+else if(state.masterTab==='employee_filters'){const names=(state.masters.employees||[]).filter(x=>Number(x.active)!==0).map(x=>x.name);q('masterTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Empleado</th><th>División</th><th>Localidad / filtro</th><th>Aparece como chofer</th><th>Aparece como ayudante</th><th>Activo</th><th>Acción</th></tr></thead><tbody>${items.map(({r,i})=>{const locs=(state.masters.localities||[]).filter(l=>l.division===r.division&&Number(l.active)!==0).map(l=>l.name);return `<tr><td><select data-m="employee_name" data-i="${i}">${optionList(names,r.employee_name,'Seleccionar empleado')}</select></td><td><select data-m="division" data-i="${i}" onchange="collectMaster();renderMaster()"><option ${r.division==='PUERTO MADRYN'?'selected':''}>PUERTO MADRYN</option><option ${r.division==='TRELEW'?'selected':''}>TRELEW</option></select></td><td><select data-m="locality" data-i="${i}">${optionList(locs,r.locality,'Seleccionar localidad')}</select></td><td><input data-m="can_driver" data-i="${i}" type="checkbox" ${Number(r.can_driver)?'checked':''}></td><td><input data-m="can_helper" data-i="${i}" type="checkbox" ${Number(r.can_helper)?'checked':''}></td><td><input data-m="active" data-i="${i}" type="checkbox" ${Number(r.active)?'checked':''}></td><td class="row-actions"><button class="btn-delete-row" onclick="deleteMasterRow(${i})">Eliminar</button></td></tr>`}).join('')}</tbody></table></div>`}
+else if(state.masterTab==='localities')q('masterTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Localidad</th><th>División</th><th>Orden</th><th>Activa</th><th>Acción</th></tr></thead><tbody>${items.map(({r,i})=>`<tr><td><input data-m="name" data-i="${i}" value="${esc(r.name)}"></td><td><select data-m="division" data-i="${i}"><option ${r.division==='PUERTO MADRYN'?'selected':''}>PUERTO MADRYN</option><option ${r.division==='TRELEW'?'selected':''}>TRELEW</option></select></td><td><input data-m="sort_order" data-i="${i}" type="number" value="${Number(r.sort_order||99)}"></td><td><input data-m="active" data-i="${i}" type="checkbox" ${Number(r.active)?'checked':''}></td><td class="row-actions"><button class="btn-delete-row" onclick="deleteMasterRow(${i})">Eliminar</button></td></tr>`).join('')}</tbody></table></div>`;
+else q('masterTable').innerHTML=`<div class="table-wrap"><table class="table"><thead><tr><th>Dominio</th><th>Empleado</th><th>Rol</th><th>Prioridad</th><th>Activo</th><th>Acción</th></tr></thead><tbody>${items.map(({r,i})=>`<tr><td><input data-m="domain" data-i="${i}" value="${esc(r.domain)}"></td><td><input data-m="employee_name" data-i="${i}" value="${esc(r.employee_name)}"></td><td><select data-m="role" data-i="${i}"><option ${r.role==='CHOFER'?'selected':''}>CHOFER</option><option ${r.role==='AYUDANTE'?'selected':''}>AYUDANTE</option></select></td><td><input data-m="priority" data-i="${i}" type="number" value="${Number(r.priority||99)}"></td><td><input data-m="active" data-i="${i}" type="checkbox" ${Number(r.active)?'checked':''}></td><td class="row-actions"><button class="btn-delete-row" onclick="deleteMasterRow(${i})">Eliminar</button></td></tr>`).join('')}</tbody></table></div>`}
+function collectMaster(){document.querySelectorAll('#masterTable [data-m]').forEach(el=>{const row=state.masters[state.masterTab][Number(el.dataset.i)];row[el.dataset.m]=el.type==='checkbox'?el.checked:el.type==='number'?Number(el.value||0):el.value})}
+function addMasterRow(){collectMaster();if(state.masterTab==='employees')state.masters.employees.push({employee_code:'',name:'',division:'TRELEW',base_locality:'',can_driver:0,can_helper:1,active:1});if(state.masterTab==='employee_filters')state.masters.employee_filters.push({employee_name:'',division:'TRELEW',locality:'',can_driver:0,can_helper:1,active:1});if(state.masterTab==='localities')state.masters.localities.push({name:'',division:'TRELEW',sort_order:99,active:1});if(state.masterTab==='domain_people')state.masters.domain_people.push({domain:'',employee_name:'',role:'AYUDANTE',priority:99,active:1});renderMaster()}
+async function deleteMasterRow(index){collectMaster();const row=state.masters[state.masterTab][index];const label=row.name||row.employee_name||row.locality||row.domain||'este registro';if(!confirm(`¿Eliminar definitivamente ${label}?\n\nEl histórico de salidas ya registrado no se elimina.`))return;if(!row.id){state.masters[state.masterTab].splice(index,1);renderMaster();return}try{state.masters=await api('/api/masters/delete',{method:'POST',body:JSON.stringify({table:state.masterTab,id:row.id})});q('masterMessage').innerHTML=statusBox('Registro eliminado correctamente.','ok');renderMaster()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+async function saveCurrentMaster(){collectMaster();try{state.masters=await api('/api/masters/save',{method:'POST',body:JSON.stringify({table:state.masterTab,rows:state.masters[state.masterTab]})});q('masterMessage').innerHTML=statusBox('Configuración guardada correctamente.','ok');renderMaster()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+function closeModal(){q('modalBack').classList.remove('show')}
+async function init(){const today=new Date().toISOString().slice(0,10);q('planningDate').value=today;const [rStart,rEnd]=period2625(today);q('recargaStart').value=rStart;q('recargaEnd').value=rEnd;q('kmsStart').value=today.slice(0,8)+'01';q('kmsEnd').value=today;q('historyStart').value=today.slice(0,8)+'01';q('historyEnd').value=today;await refreshDates();if(state.dates.length){q('planningDate').value=state.dates[0];const [s,e]=period2625(state.dates[0]);q('recargaStart').value=s;q('recargaEnd').value=e;q('kmsStart').value=state.dates[0].slice(0,8)+'01';q('kmsEnd').value=state.dates[0]}await syncHistoryLocalities();await loadDashboard()}
+init().catch(e=>alert(e.message));
+
+window.addEventListener('DOMContentLoaded',loadLocalProfile);
+</script>
+</body>
+</html>
