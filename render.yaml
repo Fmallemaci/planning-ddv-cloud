@@ -3,5 +3,5 @@ services:
     name: planning-ddv-v57
     runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python server.py
+    startCommand: python render_server.py
     healthCheckPath: /
