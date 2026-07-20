@@ -275,11 +275,11 @@
     <div class="nav-label">OPERACIÓN</div>
     <div class="nav">
       <button data-page="dashboard" class="active">⌂ Inicio</button>
-      <button data-page="planning">â–£ Planning CHESS</button>
-      <button data-page="daily">â–¤ Salida diaria</button>
-      <button data-page="whatsapp">â–¦ WhatsApp salida</button>
+      <button data-page="planning">▣ Planning CHESS</button>
+      <button data-page="daily">▤ Salida diaria</button>
+      <button data-page="whatsapp">▦ WhatsApp salida</button>
       <button data-page="novelties">● Novedades</button>
-      <button data-page="recargas">â—‰ Recargas</button>
+      <button data-page="recargas">◎ Recargas</button>
       <button data-page="kms">⌁ KMS Sierra Grande</button>
       <div class="nav-label">GESTIÓN</div>
       <button data-page="history">▥ Histórico</button>
@@ -343,7 +343,7 @@
     </section>
 
     <section id="page-config" class="page">
-      <div class="card"><div class="card-head"><div><h2>Configuración operativa</h2><div class="small">Base de personal por división, roles habilitados, orden de localidades y preferencias por dominio.</div></div><div class="toolbar"><label class="small" for="masterStatusFilter">Ver</label><select id="masterStatusFilter" onchange="state.masterStatus=this.value;renderMaster()" style="padding:9px 11px;border:1px solid #cbd7e0;border-radius:8px;background:#fff"><option value="ACTIVE">Solo activos</option><option value="ALL">Todos</option></select><button id="saveMasterConfigBtn" class="btn btn-primary" onclick="saveCurrentMaster()">Guardar configuración</button></div></div><div class="card-body"><div class="tabs"><button id="masterTabEmployees" class="tab active" onclick="setMasterTab('employees')">Personal operativo</button><button id="masterTabFilters" class="tab hidden" onclick="setMasterTab('employee_filters')">Filtros por localidad</button><button id="masterTabLocalities" class="tab" onclick="setMasterTab('localities')">Localidades</button><button id="masterTabDomain" class="tab" onclick="setMasterTab('domain_people')">Opciones por dominio</button><button id="masterTabUsers" class="tab admin-only" onclick="setMasterTab('users')">Usuarios y permisos</button><button id="masterTabAudit" class="tab admin-only" onclick="setMasterTab('audit')">Auditoría</button><button id="masterTabSessions" class="tab admin-only" onclick="setMasterTab('sessions')">Usuarios activos</button></div><div class="config-note">Una persona puede estar habilitada como chofer, ayudante o ambas funciones. La habilitación se controla por división: el personal de Trelew puede operar en cualquiera de las localidades de Trelew y el personal de Puerto Madryn en cualquiera de las localidades de Puerto Madryn.</div><div id="masterMessage"></div><div id="masterTable"></div><button id="addMasterRowBtn" class="btn" style="margin-top:12px" onclick="addMasterRow()">+ Agregar fila</button></div></div>
+      <div class="card"><div class="card-head"><div><h2>Configuración operativa</h2><div class="small">Base de personal por división, roles habilitados, orden de localidades y preferencias por dominio.</div></div><div class="toolbar"><label class="small" for="masterStatusFilter">Ver</label><select id="masterStatusFilter" onchange="state.masterStatus=this.value;renderMaster()" style="padding:9px 11px;border:1px solid #cbd7e0;border-radius:8px;background:#fff"><option value="ACTIVE">Solo activos</option><option value="ALL">Todos</option></select><button id="saveMasterConfigBtn" class="btn btn-primary" onclick="saveCurrentMaster()">Guardar configuración</button></div></div><div class="card-body"><div class="tabs"><button id="masterTabEmployees" class="tab active" onclick="setMasterTab('employees')">Personal operativo</button><button id="masterTabFilters" class="tab hidden" onclick="setMasterTab('employee_filters')">Filtros por localidad</button><button id="masterTabLocalities" class="tab" onclick="setMasterTab('localities')">Localidades</button><button id="masterTabDomain" class="tab" onclick="setMasterTab('domain_people')">Opciones por dominio</button><button id="masterTabUsers" class="tab admin-only" onclick="setMasterTab('users')">♟ Usuarios y permisos</button><button id="masterTabAudit" class="tab admin-only" onclick="setMasterTab('audit')">Auditoría</button><button id="masterTabSessions" class="tab admin-only" onclick="setMasterTab('sessions')">Usuarios activos</button></div><div class="config-note">Una persona puede estar habilitada como chofer, ayudante o ambas funciones. La habilitación se controla por división: el personal de Trelew puede operar en cualquiera de las localidades de Trelew y el personal de Puerto Madryn en cualquiera de las localidades de Puerto Madryn.</div><div id="masterMessage"></div><div id="masterTable"></div><button id="addMasterRowBtn" class="btn" style="margin-top:12px" onclick="addMasterRow()">+ Agregar fila</button></div></div>
     </section>
   </main>
 </div>
