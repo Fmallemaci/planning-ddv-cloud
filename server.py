@@ -150,6 +150,26 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def truthy(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "si", "sí", "activo"}
+
+
+def temporary_password_from_payload(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("password")
+        or payload.get("temporary_password")
+        or payload.get("new_password")
+        or payload.get("password_provisoria")
+        or ""
+    )
+
+
 def normalize_role(role: str) -> str:
     value = canonical(role)
     if value not in ROLES:
@@ -2278,7 +2298,7 @@ def list_users() -> list[dict[str, Any]]:
 def create_user(payload: dict[str, Any], admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
     username = canonical(payload.get("username"))
     display_name = str(payload.get("display_name") or username).strip()
-    password = str(payload.get("password") or "")
+    password = temporary_password_from_payload(payload)
     role = normalize_role(str(payload.get("role") or "CONSULTA"))
     assigned_base = normalize_assigned_base(str(payload.get("assigned_base") or ""), role)
     if not username or not display_name or not password:
@@ -2295,8 +2315,8 @@ def create_user(payload: dict[str, Any], admin: dict[str, Any], ip_address: str 
                 hash_password(password),
                 role,
                 assigned_base,
-                int(bool(payload.get("active", True))),
-                int(bool(payload.get("must_change_password", True))),
+                int(truthy(payload.get("active"), True)),
+                int(truthy(payload.get("must_change_password"), True)),
                 now_iso(),
                 now_iso(),
                 admin.get("username", ""),
@@ -2313,8 +2333,8 @@ def update_user(user_id: int, payload: dict[str, Any], admin: dict[str, Any], ip
     role = normalize_role(str(payload.get("role") or "CONSULTA"))
     assigned_base = normalize_assigned_base(str(payload.get("assigned_base") or ""), role)
     display_name = str(payload.get("display_name") or "").strip()
-    active = int(bool(payload.get("active", True)))
-    must_change = int(bool(payload.get("must_change_password", False)))
+    active = int(truthy(payload.get("active"), True))
+    must_change = int(truthy(payload.get("must_change_password"), False))
     if not display_name:
         raise ValueError("Debe completar nombre visible.")
     with db() as con:
@@ -2462,7 +2482,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Credenciales inválidas."}, 401)
             return
         with db() as con:
-            row = con.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+            row = con.execute("SELECT * FROM users WHERE UPPER(TRIM(username))=?", (username,)).fetchone()
             if not row or not int(row["active"] or 0) or not verify_password(password, row["password_hash"]):
                 attempts.append(now_ts)
                 FAILED_LOGINS[key] = attempts
