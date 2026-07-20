@@ -23,6 +23,7 @@ import zipfile
 import zlib
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from http import cookies
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,12 +32,20 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree as ET
 
+try:
+    import psycopg  # type: ignore
+except Exception:  # pragma: no cover - optional unless Supabase DB is enabled.
+    psycopg = None
+
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "data" / "operations_ddv.db"
 WEB_DIR = APP_DIR / "web"
 EXPORTS_DIR = APP_DIR / "exports"
 HOST = "127.0.0.1"
 PORT = 8766
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "").strip()
+SUPABASE_DB_URL = (os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or "").strip()
 SESSION_COOKIE = "planning_ddv_session"
 SESSION_HOURS = 10
 ACTIVE_SESSION_MINUTES = 10
@@ -56,6 +65,20 @@ ROLE_BASES = {
     "CONSULTA": "TODAS",
 }
 FAILED_LOGINS: dict[str, list[float]] = {}
+
+STORAGE_TABLES = [
+    "planning_routes",
+    "employees",
+    "vehicle_people",
+    "localities",
+    "employee_locality_roles",
+    "personnel_novelties",
+    "recargas",
+    "mail_log",
+    "users",
+    "user_sessions",
+    "audit_log",
+]
 
 try:
     import bcrypt  # type: ignore
@@ -256,8 +279,122 @@ def recarga_period(reference: str | date) -> tuple[str, str, str]:
     return start.isoformat(), end.isoformat(), label
 
 
+class CompatRow(dict):
+    def __init__(self, columns: list[str], values: tuple[Any, ...]):
+        clean_values = tuple(self._clean_value(value) for value in values)
+        super().__init__(zip(columns, clean_values))
+        self._values = clean_values
+
+    @staticmethod
+    def _clean_value(value: Any) -> Any:
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        return value
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
+
+
+class PgCursorCompat:
+    def __init__(self, cursor: Any):
+        self.cursor = cursor
+
+    def _columns(self) -> list[str]:
+        return [col.name for col in (self.cursor.description or [])]
+
+    def fetchone(self) -> CompatRow | None:
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        return CompatRow(self._columns(), tuple(row))
+
+    def fetchall(self) -> list[CompatRow]:
+        columns = self._columns()
+        return [CompatRow(columns, tuple(row)) for row in self.cursor.fetchall()]
+
+
+def postgres_enabled() -> bool:
+    return bool(SUPABASE_DB_URL)
+
+
+def translate_sqlite_to_postgres(sql: str) -> str:
+    translated = sql
+    translated = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", translated, flags=re.I)
+    translated = re.sub(
+        r"INSERT INTO localities\(([^)]+)\) VALUES\(([^)]+)\)(?!\s+ON CONFLICT)",
+        r"INSERT INTO localities(\1) VALUES(\2) ON CONFLICT(name,division) DO NOTHING",
+        translated,
+        flags=re.I | re.S,
+    )
+    translated = re.sub(
+        r"INSERT INTO vehicle_people\(([^)]+)\) VALUES\(([^)]+)\)(?!\s+ON CONFLICT)",
+        r"INSERT INTO vehicle_people(\1) VALUES(\2) ON CONFLICT(domain,employee_name,role) DO NOTHING",
+        translated,
+        flags=re.I | re.S,
+    )
+    translated = re.sub(
+        r"INSERT INTO employee_locality_roles\s*\(([^)]+)\) VALUES\(([^)]+)\)(?!\s+ON CONFLICT)",
+        r"INSERT INTO employee_locality_roles(\1) VALUES(\2) ON CONFLICT(employee_name,division,locality) DO NOTHING",
+        translated,
+        flags=re.I | re.S,
+    )
+    translated = translated.replace("SELECT last_insert_rowid()", "SELECT lastval()")
+    translated = translated.replace("display_name COLLATE NOCASE", "LOWER(display_name)")
+    translated = translated.replace("GROUP_CONCAT(DISTINCT r.role) roles", "string_agg(DISTINCT r.role, ',') roles")
+    translated = translated.replace("MAX(can_driver,?)", "GREATEST(can_driver,?)")
+    translated = translated.replace("MAX(can_helper,?)", "GREATEST(can_helper,?)")
+    return translated.replace("?", "%s")
+
+
+class PgConnectionCompat:
+    def __init__(self, connection: Any):
+        self.connection = connection
+
+    def execute(self, sql: str, params: Any = None) -> PgCursorCompat:
+        cursor = self.connection.cursor()
+        cursor.execute(translate_sqlite_to_postgres(sql), params or ())
+        return PgCursorCompat(cursor)
+
+    def executescript(self, script: str) -> None:
+        with self.connection.cursor() as cursor:
+            for statement in [part.strip() for part in script.split(";") if part.strip()]:
+                cursor.execute(statement)
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+    def rollback(self) -> None:
+        self.connection.rollback()
+
+    def close(self) -> None:
+        self.connection.close()
+
+
+def load_supabase_schema_sql() -> str:
+    schema_path = APP_DIR / "sql" / "supabase_schema.sql"
+    return schema_path.read_text(encoding="utf-8")
+
+
 @contextmanager
 def db():
+    if postgres_enabled():
+        if psycopg is None:
+            raise RuntimeError("Falta instalar psycopg para usar Supabase PostgreSQL.")
+        con = psycopg.connect(SUPABASE_DB_URL)
+        wrapped = PgConnectionCompat(con)
+        try:
+            yield wrapped
+            wrapped.commit()
+        except Exception:
+            wrapped.rollback()
+            raise
+        finally:
+            wrapped.close()
+        return
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row
@@ -330,6 +467,11 @@ def require_login(handler: BaseHTTPRequestHandler | None = None) -> dict[str, An
 
 
 def init_db() -> None:
+    if postgres_enabled():
+        with db() as con:
+            con.executescript(load_supabase_schema_sql())
+            ensure_initial_admin(con)
+        return
     with db() as con:
         con.executescript(
             """
@@ -1285,23 +1427,64 @@ def create_backup_zip() -> Path:
     backups_dir = APP_DIR / "Respaldos"
     backups_dir.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    db_copy = backups_dir / f"operations_ddv_{stamp}.db"
     zip_path = backups_dir / f"Planning_DDV_backup_{stamp}.zip"
-    with db() as con:
-        target = sqlite3.connect(db_copy)
-        con.backup(target)
-        target.close()
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.write(db_copy, db_copy.name)
-        for asset_name in ("server.py", "web/index.html"):
-            p = APP_DIR / asset_name
-            if p.exists():
-                z.write(p, asset_name)
-    try:
-        db_copy.unlink()
-    except OSError:
-        pass
+    if postgres_enabled():
+        with db() as con, zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            manifest: dict[str, Any] = {"storage": "supabase_postgres", "created_at": now_iso(), "tables": {}}
+            for table in STORAGE_TABLES:
+                rows = [dict(r) for r in con.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()]
+                manifest["tables"][table] = len(rows)
+                z.writestr(f"{table}.json", json.dumps(rows, ensure_ascii=False, default=str, indent=2))
+                csv_output = io.StringIO()
+                if rows:
+                    writer = csv.DictWriter(csv_output, fieldnames=list(rows[0].keys()))
+                    writer.writeheader()
+                    writer.writerows(rows)
+                z.writestr(f"{table}.csv", csv_output.getvalue().encode("utf-8-sig"))
+            z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for asset_name in ("server.py", "web/index.html"):
+                p = APP_DIR / asset_name
+                if p.exists():
+                    z.write(p, asset_name)
+        return zip_path
+    else:
+        db_copy = backups_dir / f"operations_ddv_{stamp}.db"
+        with db() as con:
+            target = sqlite3.connect(db_copy)
+            con.backup(target)
+            target.close()
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(db_copy, db_copy.name)
+            for asset_name in ("server.py", "web/index.html"):
+                p = APP_DIR / asset_name
+                if p.exists():
+                    z.write(p, asset_name)
+        try:
+            db_copy.unlink()
+        except OSError:
+            pass
+        return zip_path
     return zip_path
+
+
+def storage_diagnostics() -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "backend": "supabase_postgres" if postgres_enabled() else "sqlite_local",
+        "supabase_url_configured": bool(SUPABASE_URL),
+        "supabase_secret_key_configured": bool(SUPABASE_SECRET_KEY),
+        "postgres_dsn_configured": bool(SUPABASE_DB_URL),
+        "connection": "ERROR",
+        "tables": {},
+        "error": "",
+    }
+    try:
+        with db() as con:
+            for table in STORAGE_TABLES:
+                result["tables"][table] = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        result["connection"] = "OK"
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
 
 
 
@@ -2515,7 +2698,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"authenticated": bool(user), "user": user, "setup_required": user_count == 0})
             elif path.startswith("/api/"):
                 user = require_login(self)
-                if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/users", "/api/active-users"}:
+                if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/users", "/api/active-users", "/api/diagnostics/storage"}:
                     require_role(user, "ADMINISTRADOR")
                 if path == "/api/users":
                     self.send_json({"users": list_users()})
@@ -2523,6 +2706,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"rows": audit_rows(query)})
                 elif path == "/api/active-users":
                     self.send_json({"rows": active_users()})
+                elif path == "/api/diagnostics/storage":
+                    self.send_json(storage_diagnostics())
                 elif path == "/api/dates":
                     self.send_json({"dates": dates_list()})
                 elif path == "/api/routes":
