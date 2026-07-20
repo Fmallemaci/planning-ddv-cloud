@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
+import hmac
 import html
 import io
 import json
@@ -9,16 +11,19 @@ import os
 import platform
 import re
 import shutil
+import secrets
 import sqlite3
 import subprocess
 import tempfile
 import threading
 import time
+import uuid
 import webbrowser
 import zipfile
 import zlib
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
+from http import cookies
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +37,30 @@ WEB_DIR = APP_DIR / "web"
 EXPORTS_DIR = APP_DIR / "exports"
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8766"))
+SESSION_COOKIE = "planning_ddv_session"
+SESSION_HOURS = 10
+ACTIVE_SESSION_MINUTES = 10
+FAILED_LOGIN_LIMIT = 5
+FAILED_LOGIN_WINDOW_SECONDS = 15 * 60
+ROLES = {"ADMINISTRADOR", "OPERADOR_TW", "OPERADOR_PM", "CONSULTA"}
+ROLE_LABELS = {
+    "ADMINISTRADOR": "Administrador",
+    "OPERADOR_TW": "Operador Trelew",
+    "OPERADOR_PM": "Operador Puerto Madryn",
+    "CONSULTA": "Consulta",
+}
+ROLE_BASES = {
+    "ADMINISTRADOR": "TODAS",
+    "OPERADOR_TW": "TRELEW",
+    "OPERADOR_PM": "PUERTO MADRYN",
+    "CONSULTA": "TODAS",
+}
+FAILED_LOGINS: dict[str, list[float]] = {}
+
+try:
+    import bcrypt  # type: ignore
+except Exception:  # pragma: no cover - Render installs it from requirements.
+    bcrypt = None
 
 CHESS_COLUMNS = [
     "idCns", "dsCns", "TotPDV", "TotBlt", "TotUPs", "TotVal", "TotFdR",
@@ -57,6 +86,156 @@ def safe_number(value: Any) -> float:
         return float(str(value).replace(",", "."))
     except (TypeError, ValueError):
         return 0.0
+
+
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return dict(row) if row is not None else None
+
+
+def role_label(role: str) -> str:
+    return ROLE_LABELS.get(canonical(role), canonical(role).replace("_", " ").title())
+
+
+def public_user(row: dict[str, Any] | sqlite3.Row | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    data = dict(row)
+    role = canonical(data.get("role"))
+    name = str(data.get("display_name") or data.get("username") or "")
+    initials = "".join(part[:1] for part in name.split()[:2]).upper() or "U"
+    return {
+        "id": data.get("id"),
+        "username": data.get("username"),
+        "display_name": name,
+        "initials": initials,
+        "role": role,
+        "role_label": role_label(role),
+        "assigned_base": canonical(data.get("assigned_base")) or ROLE_BASES.get(role, "TODAS"),
+        "active": int(data.get("active") or 0),
+        "must_change_password": int(data.get("must_change_password") or 0),
+        "created_at": data.get("created_at"),
+        "updated_at": data.get("updated_at"),
+        "last_login": data.get("last_login"),
+        "created_by": data.get("created_by"),
+        "is_admin": role == "ADMINISTRADOR",
+    }
+
+
+def hash_password(password: str) -> str:
+    if bcrypt is not None:
+        return "bcrypt$" + bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 260000)
+    return f"pbkdf2_sha256$260000${salt}${digest.hex()}"
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    if not password_hash:
+        return False
+    if password_hash.startswith("bcrypt$") and bcrypt is not None:
+        return bool(bcrypt.checkpw(password.encode("utf-8"), password_hash.split("$", 1)[1].encode("utf-8")))
+    parts = password_hash.split("$")
+    if len(parts) == 4 and parts[0] == "pbkdf2_sha256":
+        _, rounds, salt, expected = parts
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), int(rounds)).hex()
+        return hmac.compare_digest(digest, expected)
+    return False
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def normalize_role(role: str) -> str:
+    value = canonical(role)
+    if value not in ROLES:
+        raise ValueError("Rol no permitido.")
+    return value
+
+
+def normalize_assigned_base(base: str, role: str = "") -> str:
+    value = canonical(base) or ROLE_BASES.get(canonical(role), "TODAS")
+    aliases = {"TW": "TRELEW", "PM": "PUERTO MADRYN", "PUERTO MADRYN": "PUERTO MADRYN", "TRELEW": "TRELEW", "TODAS": "TODAS"}
+    value = aliases.get(value, value)
+    if value not in {"TODAS", "TRELEW", "PUERTO MADRYN"}:
+        raise ValueError("Base asignada no permitida.")
+    return value
+
+
+def can_edit_division(user: dict[str, Any], division: str) -> bool:
+    div = canonical(division)
+    role = canonical(user.get("role"))
+    base = normalize_assigned_base(str(user.get("assigned_base") or ""), role)
+    if role == "ADMINISTRADOR":
+        return True
+    if role == "CONSULTA":
+        return False
+    if not div or div == "TODAS":
+        return False
+    return div == base
+
+
+def require_role(user: dict[str, Any] | None, *roles: str) -> dict[str, Any]:
+    if not user:
+        raise PermissionError("Debe iniciar sesión.")
+    allowed = {canonical(role) for role in roles}
+    if canonical(user.get("role")) not in allowed:
+        raise PermissionError("No tiene permiso para esta acción.")
+    return user
+
+
+def require_base_access(user: dict[str, Any], division: str) -> None:
+    if not can_edit_division(user, division):
+        raise PermissionError("No tiene permiso para modificar esa división.")
+
+
+def register_audit_event(
+    con: sqlite3.Connection | None,
+    user: dict[str, Any] | None,
+    action: str,
+    module: str,
+    operational_date: str = "",
+    division: str = "",
+    record_type: str = "",
+    record_id: str = "",
+    previous_data: Any = None,
+    new_data: Any = None,
+    ip_address: str = "",
+) -> None:
+    close_con = False
+    if con is None:
+        con = sqlite3.connect(DB_PATH, timeout=30)
+        close_con = True
+    try:
+        con.execute(
+            """
+            INSERT INTO audit_log(user_id,username,action,module,operational_date,division,record_type,record_id,previous_data,new_data,created_at,ip_address)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                user.get("id") if user else None,
+                user.get("username") if user else "",
+                action,
+                module,
+                operational_date,
+                canonical(division),
+                record_type,
+                str(record_id or ""),
+                json.dumps(previous_data, ensure_ascii=False, default=str) if previous_data is not None else "",
+                json.dumps(new_data, ensure_ascii=False, default=str) if new_data is not None else "",
+                now_iso(),
+                ip_address,
+            ),
+        )
+        if close_con:
+            con.commit()
+    finally:
+        if close_con:
+            con.close()
 
 
 def recarga_period(reference: str | date) -> tuple[str, str, str]:
@@ -93,6 +272,61 @@ def db():
 
 def column_exists(con: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row[1] == column for row in con.execute(f"PRAGMA table_info({table})"))
+
+
+def ensure_initial_admin(con: sqlite3.Connection) -> None:
+    user_count = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if user_count:
+        return
+    username = (os.getenv("PLANNING_ADMIN_USER") or "").strip()
+    password = os.getenv("PLANNING_ADMIN_PASSWORD") or ""
+    display_name = (os.getenv("PLANNING_ADMIN_NAME") or username or "").strip()
+    if not username or not password:
+        print("No hay usuarios creados. Configure PLANNING_ADMIN_USER, PLANNING_ADMIN_PASSWORD y PLANNING_ADMIN_NAME para crear el administrador inicial.")
+        return
+    con.execute(
+        """
+        INSERT INTO users(username,display_name,password_hash,role,assigned_base,active,must_change_password,created_at,updated_at,created_by)
+        VALUES(?,?,?,?,?,?,?,?,?,?)
+        """,
+        (canonical(username), display_name, hash_password(password), "ADMINISTRADOR", "TODAS", 1, 1, now_iso(), now_iso(), "ENV"),
+    )
+    register_audit_event(con, {"username": canonical(username), "role": "ADMINISTRADOR"}, "Creación administrador inicial", "Usuarios", new_data={"username": canonical(username)})
+
+
+def get_current_user(handler: BaseHTTPRequestHandler | None = None, token: str = "") -> dict[str, Any] | None:
+    session_token = token
+    if handler is not None and not session_token:
+        cookie_header = handler.headers.get("Cookie", "")
+        parsed = cookies.SimpleCookie()
+        parsed.load(cookie_header)
+        if SESSION_COOKIE in parsed:
+            session_token = parsed[SESSION_COOKIE].value
+    if not session_token:
+        return None
+    token_digest = hash_token(session_token)
+    now = now_iso()
+    with db() as con:
+        row = con.execute(
+            """
+            SELECT u.*, s.id session_id
+            FROM user_sessions s
+            JOIN users u ON u.id=s.user_id
+            WHERE s.token_hash=? AND s.active=1 AND s.expires_at>? AND u.active=1
+            """,
+            (token_digest, now),
+        ).fetchone()
+        if not row:
+            return None
+        con.execute("UPDATE user_sessions SET last_activity=? WHERE token_hash=?", (now, token_digest))
+        return public_user(row)
+
+
+def require_login(handler: BaseHTTPRequestHandler | None = None) -> dict[str, Any]:
+    user = get_current_user(handler)
+    if not user:
+        raise PermissionError("Debe iniciar sesión.")
+    return user
 
 
 def init_db() -> None:
@@ -203,6 +437,51 @@ def init_db() -> None:
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                assigned_base TEXT NOT NULL DEFAULT 'TODAS',
+                active INTEGER NOT NULL DEFAULT 1,
+                must_change_password INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_login TEXT DEFAULT '',
+                created_by TEXT DEFAULT ''
+            );
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT NOT NULL,
+                last_activity TEXT NOT NULL,
+                ip_address TEXT DEFAULT '',
+                user_agent TEXT DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT DEFAULT '',
+                action TEXT NOT NULL,
+                module TEXT NOT NULL,
+                operational_date TEXT DEFAULT '',
+                division TEXT DEFAULT '',
+                record_type TEXT DEFAULT '',
+                record_id TEXT DEFAULT '',
+                previous_data TEXT DEFAULT '',
+                new_data TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                ip_address TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_active ON user_sessions(active,last_activity);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_created_at ON audit_log(created_at);
+            CREATE INDEX IF NOT EXISTS idx_audit_log_username ON audit_log(username);
             """
         )
         migrations = {
@@ -265,6 +544,7 @@ def init_db() -> None:
                     (canonical(person["name"]), canonical(person["division"]), locality,
                      int(person["can_driver"] or 0), int(person["can_helper"] or 0)),
                 )
+        ensure_initial_admin(con)
 
 
 def _col_index(cell_ref: str) -> int:
@@ -1983,11 +2263,169 @@ $m.Display()"""
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "No se pudo abrir Outlook.")
 
+
+def list_users() -> list[dict[str, Any]]:
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT id,username,display_name,role,assigned_base,active,must_change_password,created_at,updated_at,last_login,created_by
+            FROM users ORDER BY active DESC, display_name COLLATE NOCASE
+            """
+        ).fetchall()
+        return [public_user(row) for row in rows if public_user(row)]
+
+
+def create_user(payload: dict[str, Any], admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    username = canonical(payload.get("username"))
+    display_name = str(payload.get("display_name") or username).strip()
+    password = str(payload.get("password") or "")
+    role = normalize_role(str(payload.get("role") or "CONSULTA"))
+    assigned_base = normalize_assigned_base(str(payload.get("assigned_base") or ""), role)
+    if not username or not display_name or not password:
+        raise ValueError("Debe completar usuario, nombre visible y contraseña provisoria.")
+    with db() as con:
+        con.execute(
+            """
+            INSERT INTO users(username,display_name,password_hash,role,assigned_base,active,must_change_password,created_at,updated_at,created_by)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                username,
+                display_name,
+                hash_password(password),
+                role,
+                assigned_base,
+                int(bool(payload.get("active", True))),
+                int(bool(payload.get("must_change_password", True))),
+                now_iso(),
+                now_iso(),
+                admin.get("username", ""),
+            ),
+        )
+        user_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+        register_audit_event(con, admin, "Creación de usuario", "Usuarios", record_type="users", record_id=str(user_id), new_data={"username": username, "role": role, "assigned_base": assigned_base}, ip_address=ip_address)
+    return {"ok": True}
+
+
+def update_user(user_id: int, payload: dict[str, Any], admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    if not user_id:
+        raise ValueError("Usuario no válido.")
+    role = normalize_role(str(payload.get("role") or "CONSULTA"))
+    assigned_base = normalize_assigned_base(str(payload.get("assigned_base") or ""), role)
+    display_name = str(payload.get("display_name") or "").strip()
+    active = int(bool(payload.get("active", True)))
+    must_change = int(bool(payload.get("must_change_password", False)))
+    if not display_name:
+        raise ValueError("Debe completar nombre visible.")
+    with db() as con:
+        previous = row_dict(con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+        if not previous:
+            raise ValueError("El usuario no existe.")
+        if int(previous.get("id")) == int(admin.get("id")) and active == 0:
+            active_admins = con.execute("SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND active=1 AND id<>?", (user_id,)).fetchone()[0]
+            if not active_admins:
+                raise ValueError("No se puede desactivar el último administrador activo.")
+        con.execute(
+            """
+            UPDATE users
+            SET display_name=?, role=?, assigned_base=?, active=?, must_change_password=?, updated_at=?
+            WHERE id=?
+            """,
+            (display_name, role, assigned_base, active, must_change, now_iso(), user_id),
+        )
+        register_audit_event(con, admin, "Edición de usuario", "Usuarios", record_type="users", record_id=str(user_id), previous_data=previous, new_data={"display_name": display_name, "role": role, "assigned_base": assigned_base, "active": active}, ip_address=ip_address)
+    return {"ok": True}
+
+
+def reset_user_password(user_id: int, password: str, admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    if not password:
+        raise ValueError("Debe indicar una contraseña provisoria.")
+    with db() as con:
+        row = con.execute("SELECT id,username FROM users WHERE id=?", (user_id,)).fetchone()
+        if not row:
+            raise ValueError("El usuario no existe.")
+        con.execute(
+            "UPDATE users SET password_hash=?, must_change_password=1, updated_at=? WHERE id=?",
+            (hash_password(password), now_iso(), user_id),
+        )
+        con.execute("UPDATE user_sessions SET active=0 WHERE user_id=?", (user_id,))
+        register_audit_event(con, admin, "Restablecimiento de contraseña", "Usuarios", record_type="users", record_id=str(user_id), new_data={"username": row["username"]}, ip_address=ip_address)
+    return {"ok": True}
+
+
+def change_own_password(user: dict[str, Any], current_password: str, new_password: str, ip_address: str = "") -> None:
+    if not new_password or len(new_password) < 8:
+        raise ValueError("La nueva contraseña debe tener al menos 8 caracteres.")
+    with db() as con:
+        row = con.execute("SELECT * FROM users WHERE id=?", (user.get("id"),)).fetchone()
+        if not row or not verify_password(current_password, row["password_hash"]):
+            raise ValueError("No se pudo cambiar la contraseña.")
+        con.execute("UPDATE users SET password_hash=?, must_change_password=0, updated_at=? WHERE id=?", (hash_password(new_password), now_iso(), user.get("id")))
+        register_audit_event(con, user, "Cambio de contraseña", "Usuarios", record_type="users", record_id=str(user.get("id")), ip_address=ip_address)
+
+
+def audit_rows(params: dict[str, str]) -> list[dict[str, Any]]:
+    start = params.get("start") or "1900-01-01"
+    end = params.get("end") or "2999-12-31"
+    values: list[Any] = [start + "T00:00:00", end + "T23:59:59"]
+    query = "SELECT created_at,username,action,module,division,operational_date,record_type,record_id,ip_address FROM audit_log WHERE created_at BETWEEN ? AND ?"
+    if params.get("username"):
+        query += " AND username LIKE ?"; values.append(f"%{params['username']}%")
+    if params.get("module"):
+        query += " AND module LIKE ?"; values.append(f"%{params['module']}%")
+    if params.get("division") and params.get("division") != "TODAS":
+        query += " AND division=?"; values.append(canonical(params["division"]))
+    if params.get("action"):
+        query += " AND action LIKE ?"; values.append(f"%{params['action']}%")
+    query += " ORDER BY created_at DESC LIMIT 500"
+    with db() as con:
+        return [dict(row) for row in con.execute(query, values).fetchall()]
+
+
+def active_users() -> list[dict[str, Any]]:
+    cutoff = (datetime.now() - timedelta(minutes=ACTIVE_SESSION_MINUTES)).isoformat(timespec="seconds")
+    with db() as con:
+        rows = con.execute(
+            """
+            SELECT u.username,u.display_name,u.role,u.assigned_base,MAX(s.last_activity) last_activity
+            FROM user_sessions s JOIN users u ON u.id=s.user_id
+            WHERE s.active=1 AND s.last_activity>=?
+            GROUP BY u.id,u.username,u.display_name,u.role,u.assigned_base
+            ORDER BY last_activity DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) | {"role_label": role_label(row["role"]), "state": "Conectado"} for row in rows]
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "PlanningDDV/3.8"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {fmt % args}")
+
+    def client_ip(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "")
+        return forwarded.split(",")[0].strip() if forwarded else self.client_address[0]
+
+    def set_session_cookie(self, token: str) -> None:
+        secure = " Secure;" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_HOURS * 3600};{secure}")
+
+    def clear_session_cookie(self) -> None:
+        self.send_header("Set-Cookie", f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+
+    def send_auth_json(self, payload: Any, status: int = 200, token: str = "", clear_cookie: bool = False) -> None:
+        raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        if token:
+            self.set_session_cookie(token)
+        if clear_cookie:
+            self.clear_session_cookie()
+        self.end_headers()
+        self.wfile.write(raw)
 
     def send_json(self, payload: Any, status: int = 200) -> None:
         raw = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
@@ -2014,6 +2452,51 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         return json.loads(raw.decode("utf-8")) if raw else {}
 
+    def login_user(self, payload: dict[str, Any]) -> None:
+        username = canonical(payload.get("username"))
+        password = str(payload.get("password") or "")
+        key = f"{self.client_ip()}:{username}"
+        now_ts = time.time()
+        attempts = [t for t in FAILED_LOGINS.get(key, []) if now_ts - t < FAILED_LOGIN_WINDOW_SECONDS]
+        if len(attempts) >= FAILED_LOGIN_LIMIT:
+            self.send_json({"error": "Credenciales inválidas."}, 401)
+            return
+        with db() as con:
+            row = con.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+            if not row or not int(row["active"] or 0) or not verify_password(password, row["password_hash"]):
+                attempts.append(now_ts)
+                FAILED_LOGINS[key] = attempts
+                register_audit_event(con, {"username": username}, "Intento fallido de inicio de sesión", "Autenticación", ip_address=self.client_ip())
+                self.send_json({"error": "Credenciales inválidas."}, 401)
+                return
+            token = secrets.token_urlsafe(48)
+            token_digest = hash_token(token)
+            created = now_iso()
+            expires = (datetime.now() + timedelta(hours=SESSION_HOURS)).isoformat(timespec="seconds")
+            con.execute(
+                """
+                INSERT INTO user_sessions(user_id,token_hash,created_at,expires_at,last_activity,ip_address,user_agent,active)
+                VALUES(?,?,?,?,?,?,?,1)
+                """,
+                (row["id"], token_digest, created, expires, created, self.client_ip(), self.headers.get("User-Agent", "")),
+            )
+            con.execute("UPDATE users SET last_login=?, updated_at=? WHERE id=?", (created, created, row["id"]))
+            FAILED_LOGINS.pop(key, None)
+            user = public_user(row)
+            register_audit_event(con, user, "Inicio de sesión", "Autenticación", ip_address=self.client_ip())
+        self.send_auth_json({"ok": True, "user": user}, token=token)
+
+    def logout_user(self, user: dict[str, Any] | None) -> None:
+        cookie_header = self.headers.get("Cookie", "")
+        parsed = cookies.SimpleCookie()
+        parsed.load(cookie_header)
+        token = parsed[SESSION_COOKIE].value if SESSION_COOKIE in parsed else ""
+        with db() as con:
+            if token:
+                con.execute("UPDATE user_sessions SET active=0 WHERE token_hash=?", (hash_token(token),))
+            register_audit_event(con, user, "Cierre de sesión", "Autenticación", ip_address=self.client_ip())
+        self.send_auth_json({"ok": True}, clear_cookie=True)
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -2025,6 +2508,129 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path.lstrip("/")
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
+            elif path == "/api/auth/me":
+                user = get_current_user(self)
+                with db() as con:
+                    user_count = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                self.send_json({"authenticated": bool(user), "user": user, "setup_required": user_count == 0})
+            elif path.startswith("/api/"):
+                user = require_login(self)
+                if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/users", "/api/active-users"}:
+                    require_role(user, "ADMINISTRADOR")
+                if path == "/api/users":
+                    self.send_json({"users": list_users()})
+                elif path == "/api/audit-log":
+                    self.send_json({"rows": audit_rows(query)})
+                elif path == "/api/active-users":
+                    self.send_json({"rows": active_users()})
+                elif path == "/api/dates":
+                    self.send_json({"dates": dates_list()})
+                elif path == "/api/routes":
+                    d = query.get("date", "")
+                    self.send_json({"routes": route_rows(d, query.get("division", "")), "summary": summary(d) if d else {}})
+                elif path == "/api/whatsapp":
+                    d = query.get("date", "")
+                    self.send_json({"rows": whatsapp_rows(d, query.get("division", "TODAS"))})
+                elif path == "/api/export/whatsapp.png":
+                    d = query.get("date", "")
+                    if not d:
+                        raise ValueError("Debe seleccionar una fecha.")
+                    png = render_whatsapp_image(d, query.get("division", "TODAS"))
+                    register_audit_event(None, user, "Exportación WhatsApp", "WhatsApp salida", d, query.get("division", "TODAS"), ip_address=self.client_ip())
+                    raw = png.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Disposition", f"attachment; filename=salida_whatsapp_{d}.png")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/export/whatsapp-choferes.png":
+                    d = query.get("date", "")
+                    if not d:
+                        raise ValueError("Debe seleccionar una fecha.")
+                    png = render_whatsapp_drivers_image(d, query.get("division", "TODAS"))
+                    register_audit_event(None, user, "Exportación WhatsApp choferes", "WhatsApp salida", d, query.get("division", "TODAS"), ip_address=self.client_ip())
+                    raw = png.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Disposition", f"attachment; filename=salida_choferes_{d}.png")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/options":
+                    self.send_json(options_for_routes(query.get("date", "")))
+                elif path == "/api/summary":
+                    self.send_json(summary(query.get("date", "")))
+                elif path == "/api/unassigned":
+                    self.send_json({"rows": unassigned(query.get("date", ""), query.get("division", "")), "reasons": NOVELTY_REASONS})
+                elif path == "/api/novelties":
+                    self.send_json({"rows": novelty_rows(query.get("date", ""))})
+                elif path == "/api/recargas":
+                    today = date.today().isoformat()
+                    start = query.get("start") or query.get("date") or today
+                    end = query.get("end") or start
+                    self.send_json(recarga_rows(start, end, query.get("division", "")))
+                elif path == "/api/kms":
+                    today = date.today().isoformat()
+                    self.send_json(kms_rows(query.get("start") or today, query.get("end") or today, query.get("division", "TODAS")))
+                elif path == "/api/masters":
+                    self.send_json(master_payload())
+                elif path == "/api/history":
+                    self.send_json(history_rows(query))
+                elif path == "/api/history/export.pdf":
+                    pdf = generate_history_pdf(query, query.get("section", "routes"))
+                    register_audit_event(None, user, "Exportación histórico PDF", "Histórico", query.get("start", ""), query.get("division", "TODAS"), ip_address=self.client_ip())
+                    raw = pdf.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/pdf")
+                    self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                elif path == "/api/mail/preview":
+                    body = report_html(query.get("date", ""), query.get("division", "TODAS"), logo_src="/assets/ddv_logo.png", include_novelties=True)
+                    self.send_response(200)
+                    raw = body.encode("utf-8")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                elif path == "/api/export/daily.pdf":
+                    d = query.get("date", "")
+                    if not d:
+                        raise ValueError("Debe seleccionar una fecha para generar el PDF.")
+                    pdf = generate_pdf(d, query.get("division", "TODAS"))
+                    register_audit_event(None, user, "Exportación PDF salida diaria", "Salida diaria", d, query.get("division", "TODAS"), ip_address=self.client_ip())
+                    raw = pdf.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/pdf")
+                    self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/backup/download":
+                    backup = create_backup_zip()
+                    register_audit_event(None, user, "Generación de backup", "Backup", ip_address=self.client_ip())
+                    raw = backup.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/zip")
+                    self.send_header("Content-Disposition", f"attachment; filename={backup.name}")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/export/daily.csv":
+                    d = query.get("date", "")
+                    output = io.StringIO()
+                    writer = csv.writer(output, delimiter=";")
+                    writer.writerow(["FECHA","DIVISION","UNIDAD","DOMINIO","PDV","BULTOS","RENDICION","CHOFER","AYUDANTE 1","AYUDANTE 2","LOCALIDAD","OBSERVACIONES"])
+                    for r in route_rows(d):
+                        writer.writerow([d,r["division"],r["unit_id"],r["domain"],r["pdv"],r["bultos"],r["rendicion"],r["driver"],r["helper1"],r["helper2"],r["locality"],r["observations"]])
+                    register_audit_event(None, user, "Exportación CSV salida diaria", "Salida diaria", d, ip_address=self.client_ip())
+                    raw = output.getvalue().encode("utf-8-sig")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f"attachment; filename=salida_diaria_{d}.csv")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                else:
+                    self.send_error(404)
+                return
             elif path == "/api/dates":
                 self.send_json({"dates": dates_list()})
             elif path == "/api/routes":
@@ -2126,6 +2732,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers(); self.wfile.write(raw)
             else:
                 self.send_error(404)
+        except PermissionError as exc:
+            self.send_json({"error": str(exc)}, 401 if "sesión" in str(exc) else 403)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 500)
 
@@ -2133,7 +2741,32 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             payload = self.read_json()
-            if path == "/api/import":
+            if path == "/api/auth/login":
+                self.login_user(payload)
+                return
+            if path == "/api/auth/logout":
+                self.logout_user(get_current_user(self))
+                return
+            user = require_login(self)
+            if path == "/api/auth/change-password":
+                change_own_password(user, str(payload.get("current_password") or ""), str(payload.get("new_password") or ""), self.client_ip())
+                self.send_json({"ok": True})
+                return
+            if canonical(user.get("role")) == "CONSULTA":
+                raise PermissionError("El rol Consulta es solo lectura.")
+            if path == "/api/users/create":
+                require_role(user, "ADMINISTRADOR")
+                create_user(payload, user, self.client_ip())
+                self.send_json({"ok": True, "users": list_users()})
+            elif path == "/api/users/update":
+                require_role(user, "ADMINISTRADOR")
+                update_user(int(payload.get("id") or 0), payload, user, self.client_ip())
+                self.send_json({"ok": True, "users": list_users()})
+            elif path == "/api/users/reset-password":
+                require_role(user, "ADMINISTRADOR")
+                reset_user_password(int(payload.get("id") or 0), str(payload.get("password") or ""), user, self.client_ip())
+                self.send_json({"ok": True, "users": list_users()})
+            elif path == "/api/import":
                 planning_date = payload.get("date", "")
                 if not planning_date:
                     raise ValueError("Debe indicar la fecha operativa.")
@@ -2142,6 +2775,7 @@ class Handler(BaseHTTPRequestHandler):
                 for key, division in (("tw", "TRELEW"), ("pm", "PUERTO MADRYN")):
                     content = payload.get(key)
                     if content:
+                        require_base_access(user, division)
                         raw = base64.b64decode(content.split(",")[-1])
                         rows = validate_chess(raw, division, planning_date)
                         all_rows.extend(rows)
@@ -2149,34 +2783,51 @@ class Handler(BaseHTTPRequestHandler):
                 if not all_rows:
                     raise ValueError("Debe seleccionar al menos un archivo TW o PM.")
                 result = import_routes(all_rows)
+                register_audit_event(None, user, "Carga de archivo CHESS", "Planning CHESS", planning_date, ",".join(per_division), new_data={"processed": len(all_rows), "by_division": per_division}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "processed": len(all_rows), "by_division": per_division, **result, "routes": route_rows(planning_date), "summary": summary(planning_date)})
             elif path == "/api/whatsapp/save":
                 planning_date = payload.get("date", "")
+                require_base_access(user, payload.get("division", "TODAS"))
                 save_whatsapp_observations(planning_date, payload.get("rows", []))
+                register_audit_event(None, user, "Modificación WhatsApp salida", "WhatsApp salida", planning_date, payload.get("division", "TODAS"), new_data={"rows": len(payload.get("rows", []))}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "rows": whatsapp_rows(planning_date, payload.get("division", "TODAS"))})
             elif path == "/api/routes/save":
                 planning_date = payload.get("date", "")
+                require_base_access(user, payload.get("division", "TODAS"))
+                for route in payload.get("routes", []):
+                    require_base_access(user, route.get("division", ""))
                 save_routes(
                     planning_date,
                     payload.get("routes", []),
                     bool(payload.get("confirm")),
                     payload.get("division", "TODAS"),
                 )
+                register_audit_event(None, user, "Confirmación de jornada" if payload.get("confirm") else "Guardado de borrador", "Planning CHESS", planning_date, payload.get("division", "TODAS"), new_data={"routes": len(payload.get("routes", []))}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "routes": route_rows(planning_date), "summary": summary(planning_date)})
             elif path == "/api/routes/copy-last":
+                require_role(user, "ADMINISTRADOR")
                 count = copy_last_assignments(payload.get("date", ""))
+                register_audit_event(None, user, "Copia última asignación", "Planning CHESS", payload.get("date", ""), new_data={"copied": count}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "copied": count, "routes": route_rows(payload.get("date", ""))})
             elif path == "/api/novelties/save":
+                for row in payload.get("rows", []):
+                    require_base_access(user, row.get("division", ""))
                 save_novelties(payload.get("date", ""), payload.get("rows", []))
+                register_audit_event(None, user, "Modificación de novedades", "Novedades", payload.get("date", ""), new_data={"rows": len(payload.get("rows", []))}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "rows": novelty_rows(payload.get("date", ""))})
             elif path == "/api/masters/save":
+                require_role(user, "ADMINISTRADOR")
                 save_master(payload.get("table", ""), payload.get("rows", []))
+                register_audit_event(None, user, "Modificación de configuración", "Configuración", record_type=payload.get("table", ""), new_data={"rows": len(payload.get("rows", []))}, ip_address=self.client_ip())
                 self.send_json({"ok": True, **master_payload()})
             elif path == "/api/masters/delete":
+                require_role(user, "ADMINISTRADOR")
                 delete_master(payload.get("table", ""), int(payload.get("id") or 0))
+                register_audit_event(None, user, "Eliminación de configuración", "Configuración", record_type=payload.get("table", ""), record_id=str(payload.get("id") or ""), ip_address=self.client_ip())
                 self.send_json({"ok": True, **master_payload()})
             elif path == "/api/history/mail":
                 open_history_mail(payload, payload.get("section", "routes"))
+                register_audit_event(None, user, "Generación mail histórico", "Histórico", payload.get("start", ""), payload.get("division", "TODAS"), ip_address=self.client_ip())
                 self.send_json({"ok": True})
             elif path == "/api/mail/open":
                 planning_date = payload.get("date", "")
@@ -2189,11 +2840,14 @@ class Handler(BaseHTTPRequestHandler):
                         "INSERT INTO mail_log(mail_date,planning_date,recipients,cc,subject,status) VALUES(?,?,?,?,?,?)",
                         (datetime.now().isoformat(timespec="seconds"), planning_date, recipient, payload.get("cc", ""), payload.get("subject", ""), "ENVIADO" if payload.get("send_now") else "BORRADOR ABIERTO"),
                     )
+                    register_audit_event(con, user, "Envío de mail" if payload.get("send_now") else "Generación de borrador mail", "Mail operativo", planning_date, division, new_data={"to": recipient, "subject": payload.get("subject", "")}, ip_address=self.client_ip())
                 self.send_json({"ok": True})
             else:
                 self.send_error(404)
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)
+        except PermissionError as exc:
+            self.send_json({"error": str(exc)}, 401 if "sesión" in str(exc) else 403)
         except Exception as exc:
             self.send_json({"error": str(exc)}, 500)
 
@@ -2207,8 +2861,7 @@ def run() -> None:
     print(f"  Aplicación disponible en: {url}")
     print("  Para cerrar, presione Ctrl+C en esta ventana.")
     print("=" * 66)
-    if HOST in ("127.0.0.1", "localhost"):
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="es">
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Planning DDV</title>
 <style>
@@ -236,33 +236,50 @@
 
 <style id="whatsapp-v46">
 .whatsapp-sheet{background:#fff;color:#102b3e;border-radius:14px;padding:18px;border:1px solid #bfd0da}.whatsapp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}.whatsapp-head h2{margin:0;color:#0b4266}.whatsapp-date{font-size:18px;font-weight:900;color:#0b4266}.whatsapp-table{width:100%;border-collapse:collapse;font-size:14px}.whatsapp-table th{padding:11px;background:#0b4266;color:#fff;text-align:left}.whatsapp-table td{padding:10px;border-bottom:1px solid #dbe4e9}.whatsapp-table input{width:100%;padding:9px;border:1px solid #b9cbd5;border-radius:7px}.whatsapp-summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:14px}.whatsapp-summary>div{background:#f3f8fb;border:1px solid #bfd0da;border-radius:10px;padding:12px;text-align:center}.whatsapp-summary b{display:block;font-size:25px;color:#0b4266}.whatsapp-summary small{font-size:11px;font-weight:900;color:#61798a;text-transform:uppercase}.whatsapp-division{display:grid;grid-template-columns:1fr auto;align-items:center;gap:16px;font-size:18px;font-weight:900;color:#fff;padding:9px 12px;margin-top:15px}.whatsapp-division-main{display:flex;align-items:center;gap:18px;min-width:0}.whatsapp-division-name{font-size:20px;white-space:nowrap}.whatsapp-trucks{font-size:12px;background:rgba(255,255,255,.16);padding:5px 10px;border-radius:14px;white-space:nowrap}.whatsapp-bultos{font-size:12px;background:rgba(0,0,0,.16);padding:5px 10px;border-radius:14px;white-space:nowrap;text-align:right}.whatsapp-division.tw{background:#1d7426}.whatsapp-division.pm{background:#126aa9}.whatsapp-cyo{background:#fff5df!important;border-top:3px solid #e2a51b}.whatsapp-cyo-tag{display:inline-block;margin-left:7px;background:#e39c0c;color:#fff;border-radius:10px;padding:2px 7px;font-size:10px;font-weight:900}.whatsapp-mode-buttons{display:flex;gap:10px;align-items:center}.whatsapp-mode-buttons .active{background:#126aa9;color:#fff;border-color:#126aa9}.whatsapp-driver-table{min-width:1450px;font-size:12px}.whatsapp-driver-table th,.whatsapp-driver-table td{padding:9px 8px}.whatsapp-driver-table th{white-space:nowrap}.whatsapp-driver-table td:nth-child(9){min-width:230px}
+</style>
+<style id="auth-users-v57">
+.login-screen{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:radial-gradient(circle at 70% 0,#11334a 0,#061522 45%,#04101a 100%);padding:22px}
+.login-screen.hidden{display:none!important}
+.login-box{width:min(430px,100%);background:#0b2132;border:1px solid #315269;border-radius:16px;box-shadow:0 22px 70px rgba(0,0,0,.35);padding:28px;color:#fff}
+.login-box h1{margin:0 0 6px;font-size:28px}.login-box p{margin:0 0 22px;color:#9bb0c0}.login-box .field{margin-bottom:13px}.login-box input{width:100%;background:#10283a!important;border-color:#315269!important;color:#fff!important}.login-box button{width:100%;margin-top:8px}
+.app.auth-pending{filter:blur(1px);pointer-events:none}.logout-btn{margin-top:8px;width:100%;font-size:11px;padding:7px 9px}.session-copy b{display:block;border-bottom:1px solid rgba(255,255,255,.15);padding-bottom:5px}.user-base{display:block;font-size:10px;color:#c4d6e2;margin-top:4px}.admin-only{display:none}.is-admin .admin-only{display:revert}
+.security-grid{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:14px}.security-card{border:1px solid #284b62;border-radius:10px;padding:14px;background:#0a2030}.security-card h3{margin:0 0 10px}.form-row{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:10px;margin-bottom:10px}.form-row .field{min-width:0}
+@media(max-width:850px){.security-grid,.form-row{grid-template-columns:1fr}}
 </style></head>
 <body>
-<div class="app">
+<div id="loginScreen" class="login-screen">
+  <form class="login-box" onsubmit="login(event)">
+    <h1>Planning DDV</h1>
+    <p>Ingreso de usuarios habilitados</p>
+    <div class="field"><label>Usuario</label><input id="loginUsername" autocomplete="username" required></div>
+    <div class="field"><label>Contraseña</label><input id="loginPassword" type="password" autocomplete="current-password" required></div>
+    <button class="btn btn-primary" type="submit">Ingresar</button>
+    <div id="loginMessage"></div>
+  </form>
+</div>
+<div class="app auth-pending">
   <aside class="sidebar">
     <div class="brand premium-brand premium-brand-v34">
   <div class="brand-copy"><b>PLANNING DDV</b><small>Control de distribución</small></div>
 </div>
 <div class="user-card user-card-v34">
-  <div id="currentAvatar" class="avatar">FM</div>
+  <div id="currentAvatar" class="avatar">U</div>
   <div class="session-copy">
-    <select id="localUserProfile" aria-label="Perfil de esta PC" onchange="setLocalProfile(this.value)">
-      <option value="fernando">Fernando</option>
-      <option value="kevin">Kevin</option>
-      <option value="nestor">Néstor</option>
-    </select>
-    <small id="currentRole">Administrador</small>
-    <span class="connected">● Perfil local</span>
+    <b id="currentUserName">Usuario</b>
+    <small id="currentRole">Rol</small>
+    <span id="currentBase" class="user-base">Base</span>
+    <span class="connected">● Conectado</span>
+    <button class="btn logout-btn" onclick="logout()">Cerrar sesión</button>
   </div>
 </div>
     <div class="nav-label">OPERACIÓN</div>
     <div class="nav">
       <button data-page="dashboard" class="active">⌂ Inicio</button>
-      <button data-page="planning">▣ Planning CHESS</button>
-      <button data-page="daily">▤ Salida diaria</button>
-      <button data-page="whatsapp">▦ WhatsApp salida</button>
+      <button data-page="planning">â–£ Planning CHESS</button>
+      <button data-page="daily">â–¤ Salida diaria</button>
+      <button data-page="whatsapp">â–¦ WhatsApp salida</button>
       <button data-page="novelties">● Novedades</button>
-      <button data-page="recargas">◉ Recargas</button>
+      <button data-page="recargas">â—‰ Recargas</button>
       <button data-page="kms">⌁ KMS Sierra Grande</button>
       <div class="nav-label">GESTIÓN</div>
       <button data-page="history">▥ Histórico</button>
@@ -276,7 +293,7 @@
     <section id="page-dashboard" class="page active">
 <div class="hero-dashboard hero-dashboard-v34"><div class="hero-overlay hero-overlay-v34" aria-hidden="true"></div><div class="hero-controls"><label>FECHA OPERATIVA</label><select id="dashboardDate"></select><div class="division-buttons"><button onclick="showPage('planning');setPlanningDivision('TRELEW')">TRELEW</button><button onclick="showPage('planning');setPlanningDivision('PUERTO MADRYN')">PUERTO MADRYN</button></div></div></div>
 <div id="dashboardKpis" class="kpis premium-kpis"></div>
-<div class="dashboard-layout"><div class="dashboard-center"><div id="divisionSummary" class="division-panels"></div><div class="history-premium card"><div class="card-head"><div><h2>Histórico rápido</h2><div class="small">Últimos días cargados</div></div><button class="btn" onclick="showPage('history')">Ver histórico</button></div><div class="card-body"><div id="dashboardHistory" class="empty">Se completa a partir de las cargas diarias.</div></div></div></div><aside class="dashboard-side"><div class="side-card"><h3>Resumen general</h3><div id="dashboardSideSummary"></div></div><div class="side-card"><h3>Estado del día</h3><div id="closureChecks" class="checklist"></div></div><div class="side-card quick"><h3>Acciones rápidas</h3><button onclick="showPage('planning')">＋ Nueva salida</button><button onclick="showPage('daily')">▤ Salida diaria</button><button onclick="showPage('novelties')">● Novedades</button><button onclick="showPage('recargas')">◉ Recargas</button><button onclick="showPage('mail')">✉ Enviar mail</button></div></aside></div>
+<div class="dashboard-layout"><div class="dashboard-center"><div id="divisionSummary" class="division-panels"></div><div class="history-premium card"><div class="card-head"><div><h2>Histórico rápido</h2><div class="small">Últimos días cargados</div></div><button class="btn" onclick="showPage('history')">Ver histórico</button></div><div class="card-body"><div id="dashboardHistory" class="empty">Se completa a partir de las cargas diarias.</div></div></div></div><aside class="dashboard-side"><div class="side-card"><h3>Resumen general</h3><div id="dashboardSideSummary"></div></div><div class="side-card"><h3>Estado del día</h3><div id="closureChecks" class="checklist"></div></div><div class="side-card quick"><h3>Acciones rápidas</h3><button onclick="showPage('planning')">+ Nueva salida</button><button onclick="showPage('daily')">▤ Salida diaria</button><button onclick="showPage('novelties')">● Novedades</button><button onclick="showPage('recargas')">◉ Recargas</button><button onclick="showPage('mail')">✉ Enviar mail</button></div></aside></div>
 </section>
 
     <section id="page-planning" class="page">
@@ -326,30 +343,60 @@
     </section>
 
     <section id="page-config" class="page">
-      <div class="card"><div class="card-head"><div><h2>Configuración operativa</h2><div class="small">Base de personal por división, roles habilitados, orden de localidades y preferencias por dominio.</div></div><div class="toolbar"><label class="small" for="masterStatusFilter">Ver</label><select id="masterStatusFilter" onchange="state.masterStatus=this.value;renderMaster()" style="padding:9px 11px;border:1px solid #cbd7e0;border-radius:8px;background:#fff"><option value="ACTIVE">Solo activos</option><option value="ALL">Todos</option></select><button class="btn btn-primary" onclick="saveCurrentMaster()">Guardar configuración</button></div></div><div class="card-body"><div class="tabs"><button id="masterTabEmployees" class="tab active" onclick="setMasterTab('employees')">Personal operativo</button><button id="masterTabFilters" class="tab hidden" onclick="setMasterTab('employee_filters')">Filtros por localidad</button><button id="masterTabLocalities" class="tab" onclick="setMasterTab('localities')">Localidades</button><button id="masterTabDomain" class="tab" onclick="setMasterTab('domain_people')">Opciones por dominio</button></div><div class="config-note">Una persona puede estar habilitada como chofer, ayudante o ambas funciones. La habilitación se controla por división: el personal de Trelew puede operar en cualquiera de las localidades de Trelew y el personal de Puerto Madryn en cualquiera de las localidades de Puerto Madryn.</div><div id="masterMessage"></div><div id="masterTable"></div><button class="btn" style="margin-top:12px" onclick="addMasterRow()">+ Agregar fila</button></div></div>
+      <div class="card"><div class="card-head"><div><h2>Configuración operativa</h2><div class="small">Base de personal por división, roles habilitados, orden de localidades y preferencias por dominio.</div></div><div class="toolbar"><label class="small" for="masterStatusFilter">Ver</label><select id="masterStatusFilter" onchange="state.masterStatus=this.value;renderMaster()" style="padding:9px 11px;border:1px solid #cbd7e0;border-radius:8px;background:#fff"><option value="ACTIVE">Solo activos</option><option value="ALL">Todos</option></select><button id="saveMasterConfigBtn" class="btn btn-primary" onclick="saveCurrentMaster()">Guardar configuración</button></div></div><div class="card-body"><div class="tabs"><button id="masterTabEmployees" class="tab active" onclick="setMasterTab('employees')">Personal operativo</button><button id="masterTabFilters" class="tab hidden" onclick="setMasterTab('employee_filters')">Filtros por localidad</button><button id="masterTabLocalities" class="tab" onclick="setMasterTab('localities')">Localidades</button><button id="masterTabDomain" class="tab" onclick="setMasterTab('domain_people')">Opciones por dominio</button><button id="masterTabUsers" class="tab admin-only" onclick="setMasterTab('users')">Usuarios y permisos</button><button id="masterTabAudit" class="tab admin-only" onclick="setMasterTab('audit')">Auditoría</button><button id="masterTabSessions" class="tab admin-only" onclick="setMasterTab('sessions')">Usuarios activos</button></div><div class="config-note">Una persona puede estar habilitada como chofer, ayudante o ambas funciones. La habilitación se controla por división: el personal de Trelew puede operar en cualquiera de las localidades de Trelew y el personal de Puerto Madryn en cualquiera de las localidades de Puerto Madryn.</div><div id="masterMessage"></div><div id="masterTable"></div><button id="addMasterRowBtn" class="btn" style="margin-top:12px" onclick="addMasterRow()">+ Agregar fila</button></div></div>
     </section>
   </main>
 </div>
 <div id="modalBack" class="modal-back"><div class="modal"><div class="modal-head"><b id="modalTitle">Detalle</b><button class="close" onclick="closeModal()">×</button></div><div id="modalBody" class="modal-body"></div></div></div>
 <script>
-const state={dates:[],routes:[],options:null,planningDivision:'TODAS',masters:null,masterTab:'employees',masterStatus:'ACTIVE',noveltyRows:[],historyLocalities:[],whatsappMode:'deposito'};
+const state={dates:[],routes:[],options:null,planningDivision:'TODAS',masters:null,masterTab:'employees',masterStatus:'ACTIVE',noveltyRows:[],historyLocalities:[],whatsappMode:'deposito',currentUser:null};
 
-const localProfiles={
-  fernando:{name:'Fernando',initials:'FM',role:'Administrador'},
-  kevin:{name:'Kevin',initials:'K',role:'Trelew'},
-  nestor:{name:'Néstor',initials:'N',role:'Puerto Madryn'}
-};
-function setLocalProfile(key){
-  const p=localProfiles[key]||localProfiles.fernando;
-  localStorage.setItem('planningDDVLocalProfile',key);
-  const sel=q('localUserProfile');
-  if(sel&&sel.value!==key)sel.value=key;
-  if(q('currentAvatar'))q('currentAvatar').textContent=p.initials;
-  if(q('currentRole'))q('currentRole').textContent=p.role;
+function renderSession(){
+  const u=state.currentUser||{};
+  q('currentAvatar').textContent=u.initials||'U';
+  q('currentUserName').textContent=u.display_name||u.username||'Usuario';
+  q('currentRole').textContent=u.role_label||u.role||'Rol';
+  q('currentBase').textContent=`Base: ${u.assigned_base||'TODAS'}`;
+  document.body.classList.toggle('is-admin',!!u.is_admin);
+  document.querySelector('[data-page="config"]').style.display=u.is_admin?'flex':'none';
+  if(!u.is_admin&&document.querySelector('#page-config.active'))showPage('dashboard');
+  applyUserRestrictions();
 }
-function loadLocalProfile(){
-  const key=localStorage.getItem('planningDDVLocalProfile')||'fernando';
-  setLocalProfile(key);
+function applyUserRestrictions(){
+  const u=state.currentUser||{},role=u.role||'',base=u.assigned_base||'TODAS';
+  const writable=role!=='CONSULTA';
+  document.querySelectorAll('button').forEach(btn=>{if(btn.closest('#loginScreen'))return;btn.disabled=false});
+  if(role==='OPERADOR_TW'||role==='OPERADOR_PM'){
+    state.planningDivision=base;
+    ['planningDivisionFilter','noveltyDivision','whatsappDivision'].forEach(id=>{const el=q(id);if(el){el.value=base;el.querySelectorAll('option').forEach(o=>o.disabled=o.value!==base&&o.textContent!==base)}});
+  }
+  if(!writable){
+    ['saveDraftBtn','confirmPlanningBtn','waSaveBtn'].forEach(id=>{if(q(id))q(id).disabled=true});
+    document.querySelectorAll('#page-planning input,#page-planning select,#page-whatsapp input,#page-novelties input,#page-novelties select,#page-config input,#page-config select').forEach(el=>el.disabled=true);
+  }
+}
+function showLogin(message=''){
+  q('loginScreen').classList.remove('hidden');
+  document.querySelector('.app').classList.add('auth-pending');
+  if(message)q('loginMessage').innerHTML=statusBox(message,'warn');
+}
+function hideLogin(){
+  q('loginScreen').classList.add('hidden');
+  document.querySelector('.app').classList.remove('auth-pending');
+  q('loginPassword').value='';
+  q('loginMessage').innerHTML='';
+}
+async function login(ev){
+  ev.preventDefault();
+  try{
+    const data=await api('/api/auth/login',{method:'POST',body:JSON.stringify({username:q('loginUsername').value,password:q('loginPassword').value})});
+    state.currentUser=data.user;renderSession();hideLogin();await initAppData();
+  }catch(e){q('loginMessage').innerHTML=statusBox(e.message||'Credenciales inválidas.','error')}
+}
+async function logout(){
+  await api('/api/auth/logout',{method:'POST',body:'{}'}).catch(()=>{});
+  state.currentUser=null;
+  showLogin('Sesión cerrada.');
 }
 
 const pageInfo={dashboard:['Resumen ejecutivo','Visión diaria consolidada de Trelew y Puerto Madryn.'],planning:['Planning CHESS','Importación real de TW/PM y asignación operativa por fecha.'],daily:['Salida diaria','Detalle consolidado de camiones, dotación y localidades.'],whatsapp:['WhatsApp salida','Planilla previa para choferes con observaciones operativas.'],novelties:['Novedades de personal','Clasificación del personal activo que no participa de la salida.'],recargas:['Recargas 26–25','Seguimiento individual por período operativo.'],kms:['KMS Sierra Grande','Registro de kilómetros de las salidas a Sierra Grande.'],history:['Histórico','Consulta por fecha, localidad, empleado y novedad.'],mail:['Mail operativo','Vista previa ejecutiva y apertura directa en Outlook.'],config:['Configuración','Administración de personal, roles, localidades y dominios.']};
@@ -357,7 +404,7 @@ function q(id){return document.getElementById(id)}
 function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function fmt(v,d=0){const n=Number(v||0);return n.toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d})}
 function statusBox(text,type='info'){return `<div class="status ${type}">${esc(text)}</div>`}
-async function api(url,options={}){const r=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const type=r.headers.get('content-type')||'';const data=type.includes('application/json')?await r.json():await r.text();if(!r.ok)throw new Error(data.error||data||`Error ${r.status}`);return data}
+async function api(url,options={}){const r=await fetch(url,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const type=r.headers.get('content-type')||'';const data=type.includes('application/json')?await r.json():await r.text();if(!r.ok){if(r.status===401)showLogin('Debe iniciar sesión.');throw new Error(data.error||data||`Error ${r.status}`)}return data}
 async function fileBase64(input){const f=input.files[0];if(!f)return null;return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(f)})}
 function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));q(`page-${name}`).classList.add('active');document.querySelectorAll('.nav button[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));q('pageTitle').textContent=pageInfo[name][0];q('pageSubtitle').textContent=pageInfo[name][1];if(name==='dashboard')loadDashboard();if(name==='planning')loadPlanning();if(name==='daily')loadDaily();if(name==='whatsapp')loadWhatsapp();if(name==='novelties')loadNovelties();if(name==='recargas')loadRecargas();if(name==='kms')loadKms();if(name==='history')loadHistory();if(name==='mail')loadMailPreview();if(name==='config')loadMasters()}
 document.querySelectorAll('.nav button[data-page]').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
@@ -525,11 +572,49 @@ function collectMaster(){document.querySelectorAll('#masterTable [data-m]').forE
 function addMasterRow(){collectMaster();if(state.masterTab==='employees')state.masters.employees.push({employee_code:'',name:'',division:'TRELEW',base_locality:'',can_driver:0,can_helper:1,active:1});if(state.masterTab==='employee_filters')state.masters.employee_filters.push({employee_name:'',division:'TRELEW',locality:'',can_driver:0,can_helper:1,active:1});if(state.masterTab==='localities')state.masters.localities.push({name:'',division:'TRELEW',sort_order:99,active:1});if(state.masterTab==='domain_people')state.masters.domain_people.push({domain:'',employee_name:'',role:'AYUDANTE',priority:99,active:1});renderMaster()}
 async function deleteMasterRow(index){collectMaster();const row=state.masters[state.masterTab][index];const label=row.name||row.employee_name||row.locality||row.domain||'este registro';if(!confirm(`¿Eliminar definitivamente ${label}?\n\nEl histórico de salidas ya registrado no se elimina.`))return;if(!row.id){state.masters[state.masterTab].splice(index,1);renderMaster();return}try{state.masters=await api('/api/masters/delete',{method:'POST',body:JSON.stringify({table:state.masterTab,id:row.id})});q('masterMessage').innerHTML=statusBox('Registro eliminado correctamente.','ok');renderMaster()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
 async function saveCurrentMaster(){collectMaster();try{state.masters=await api('/api/masters/save',{method:'POST',body:JSON.stringify({table:state.masterTab,rows:state.masters[state.masterTab]})});q('masterMessage').innerHTML=statusBox('Configuración guardada correctamente.','ok');renderMaster()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+async function loadMasters(){if(!state.currentUser?.is_admin){showPage('dashboard');return}if(['users','audit','sessions'].includes(state.masterTab)){await renderSecurityTab();return}state.masters=await api('/api/masters');renderMaster()}
+function setMasterTab(tab){state.masterTab=tab;['Employees','Filters','Localities','Domain','Users','Audit','Sessions'].forEach(x=>{const el=q(`masterTab${x}`);if(el)el.classList.remove('active')});const map={employees:'masterTabEmployees',employee_filters:'masterTabFilters',localities:'masterTabLocalities',domain_people:'masterTabDomain',users:'masterTabUsers',audit:'masterTabAudit',sessions:'masterTabSessions'};q(map[tab]).classList.add('active');q('addMasterRowBtn').style.display=['users','audit','sessions'].includes(tab)?'none':'inline-flex';q('saveMasterConfigBtn').style.display=['users','audit','sessions'].includes(tab)?'none':'inline-flex';if(['users','audit','sessions'].includes(tab))renderSecurityTab();else renderMaster()}
+async function renderSecurityTab(){
+  q('masterMessage').innerHTML='';
+  if(state.masterTab==='users'){
+    const data=await api('/api/users');
+    const users=data.users||[];
+    const roleOptions=(value)=>['ADMINISTRADOR','OPERADOR_TW','OPERADOR_PM','CONSULTA'].map(x=>'<option '+(x===value?'selected':'')+'>'+x+'</option>').join('');
+    const baseOptions=(value)=>['TODAS','TRELEW','PUERTO MADRYN'].map(x=>'<option '+(x===value?'selected':'')+'>'+x+'</option>').join('');
+    const rows=users.map(u=>[
+      esc(u.username),
+      '<input data-u="'+u.id+'" data-f="display_name" value="'+esc(u.display_name)+'">',
+      '<select data-u="'+u.id+'" data-f="role">'+roleOptions(u.role)+'</select>',
+      '<select data-u="'+u.id+'" data-f="assigned_base">'+baseOptions(u.assigned_base)+'</select>',
+      '<input data-u="'+u.id+'" data-f="active" type="checkbox" '+(Number(u.active)?'checked':'')+'>',
+      '<input data-u="'+u.id+'" data-f="must_change_password" type="checkbox" '+(Number(u.must_change_password)?'checked':'')+'>',
+      esc(u.last_login||'-'),
+      '<button class="btn" onclick="updateUser('+u.id+')">Guardar</button> <button class="btn" onclick="resetPassword('+u.id+')">Restablecer</button>'
+    ]);
+    q('masterTable').innerHTML='<div class="security-grid"><div class="security-card"><h3>Crear usuario</h3><div class="form-row"><div class="field"><label>Usuario</label><input id="newUsername"></div><div class="field"><label>Nombre visible</label><input id="newDisplayName"></div><div class="field"><label>Contraseña provisoria</label><input id="newPassword" type="password"></div></div><div class="form-row"><div class="field"><label>Rol</label><select id="newRole" onchange="syncRoleBase(\'new\')"><option>ADMINISTRADOR</option><option>OPERADOR_TW</option><option>OPERADOR_PM</option><option>CONSULTA</option></select></div><div class="field"><label>Base asignada</label><select id="newAssignedBase"><option>TODAS</option><option>TRELEW</option><option>PUERTO MADRYN</option></select></div><div class="field"><label>Estado</label><select id="newActive"><option value="1">Activo</option><option value="0">Inactivo</option></select></div></div><label class="small"><input id="newMustChange" type="checkbox" checked> Exigir cambio en el primer ingreso</label><div class="toolbar" style="margin-top:12px"><button class="btn btn-primary" onclick="createUser()">Crear usuario</button></div></div><div class="security-card"><h3>Usuarios</h3>'+tableHtml(['Usuario','Nombre','Rol','Base','Activo','Debe cambiar','Último ingreso','Acciones'],rows)+'</div></div>';
+    return;
+  }
+  if(state.masterTab==='audit'){
+    const today=new Date().toISOString().slice(0,10);
+    q('masterTable').innerHTML='<div class="card-body filters"><div class="field"><label>Desde</label><input id="auditStart" type="date" value="'+today.slice(0,8)+'01"></div><div class="field"><label>Hasta</label><input id="auditEnd" type="date" value="'+today+'"></div><div class="field"><label>Usuario</label><input id="auditUser"></div><div class="field"><label>Módulo</label><input id="auditModule"></div><div class="field"><label>División</label><select id="auditDivision"><option>TODAS</option><option>TRELEW</option><option>PUERTO MADRYN</option></select></div><div class="field"><label>Acción</label><input id="auditAction"></div><button class="btn btn-primary" onclick="loadAudit()">Consultar</button></div><div id="auditTable"></div>';
+    await loadAudit();
+    return;
+  }
+  if(state.masterTab==='sessions'){
+    const data=await api('/api/active-users');
+    q('masterTable').innerHTML=tableHtml(['Usuario','Nombre','Rol','Base','Última actividad','Estado'],(data.rows||[]).map(r=>[esc(r.username),esc(r.display_name),esc(r.role_label),esc(r.assigned_base),esc(r.last_activity),'<span class="pill ok">'+esc(r.state)+'</span>']));
+  }
+}
+function syncRoleBase(prefix){const role=q(`${prefix}Role`).value,base=q(`${prefix}AssignedBase`);if(role==='OPERADOR_TW')base.value='TRELEW';else if(role==='OPERADOR_PM')base.value='PUERTO MADRYN';else if(role==='ADMINISTRADOR')base.value='TODAS'}
+async function createUser(){try{await api('/api/users/create',{method:'POST',body:JSON.stringify({username:q('newUsername').value,display_name:q('newDisplayName').value,password:q('newPassword').value,role:q('newRole').value,assigned_base:q('newAssignedBase').value,active:q('newActive').value==='1',must_change_password:q('newMustChange').checked})});q('masterMessage').innerHTML=statusBox('Usuario creado correctamente.','ok');await renderSecurityTab()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+function userPayload(id){const out={id};document.querySelectorAll(`[data-u="${id}"]`).forEach(el=>out[el.dataset.f]=el.type==='checkbox'?el.checked:el.value);return out}
+async function updateUser(id){try{await api('/api/users/update',{method:'POST',body:JSON.stringify(userPayload(id))});q('masterMessage').innerHTML=statusBox('Usuario actualizado correctamente.','ok');await renderSecurityTab()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+async function resetPassword(id){const password=prompt('Contraseña provisoria nueva');if(!password)return;try{await api('/api/users/reset-password',{method:'POST',body:JSON.stringify({id,password})});q('masterMessage').innerHTML=statusBox('Contraseña restablecida.','ok');await renderSecurityTab()}catch(e){q('masterMessage').innerHTML=statusBox(e.message,'error')}}
+async function loadAudit(){const params=new URLSearchParams({start:q('auditStart').value,end:q('auditEnd').value,username:q('auditUser').value,module:q('auditModule').value,division:q('auditDivision').value,action:q('auditAction').value});const data=await api('/api/audit-log?'+params);q('auditTable').innerHTML=tableHtml(['Fecha y hora','Usuario','Acción','Módulo','División','Fecha operativa','Registro'],(data.rows||[]).map(r=>[esc(r.created_at),esc(r.username),esc(r.action),esc(r.module),esc(r.division),esc(r.operational_date),esc(`${r.record_type||''} ${r.record_id||''}`)]))}
 function closeModal(){q('modalBack').classList.remove('show')}
-async function init(){const today=new Date().toISOString().slice(0,10);q('planningDate').value=today;const [rStart,rEnd]=period2625(today);q('recargaStart').value=rStart;q('recargaEnd').value=rEnd;q('kmsStart').value=today.slice(0,8)+'01';q('kmsEnd').value=today;q('historyStart').value=today.slice(0,8)+'01';q('historyEnd').value=today;await refreshDates();if(state.dates.length){q('planningDate').value=state.dates[0];const [s,e]=period2625(state.dates[0]);q('recargaStart').value=s;q('recargaEnd').value=e;q('kmsStart').value=state.dates[0].slice(0,8)+'01';q('kmsEnd').value=state.dates[0]}await syncHistoryLocalities();await loadDashboard()}
-init().catch(e=>alert(e.message));
-
-window.addEventListener('DOMContentLoaded',loadLocalProfile);
+async function initAppData(){const today=new Date().toISOString().slice(0,10);q('planningDate').value=today;const [rStart,rEnd]=period2625(today);q('recargaStart').value=rStart;q('recargaEnd').value=rEnd;q('kmsStart').value=today.slice(0,8)+'01';q('kmsEnd').value=today;q('historyStart').value=today.slice(0,8)+'01';q('historyEnd').value=today;await refreshDates();if(state.dates.length){q('planningDate').value=state.dates[0];const [s,e]=period2625(state.dates[0]);q('recargaStart').value=s;q('recargaEnd').value=e;q('kmsStart').value=state.dates[0].slice(0,8)+'01';q('kmsEnd').value=state.dates[0]}await syncHistoryLocalities();await loadDashboard();applyUserRestrictions()}
+async function bootstrap(){try{const me=await api('/api/auth/me');if(me.authenticated){state.currentUser=me.user;renderSession();hideLogin();await initAppData()}else{showLogin(me.setup_required?'No hay administrador inicial. Configurar variables de entorno en Render.':'')}}catch(e){showLogin(e.message)}}
+bootstrap();
 </script>
 </body>
 </html>
