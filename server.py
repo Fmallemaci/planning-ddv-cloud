@@ -2408,7 +2408,7 @@ class Handler(BaseHTTPRequestHandler):
         return forwarded.split(",")[0].strip() if forwarded else self.client_address[0]
 
     def set_session_cookie(self, token: str) -> None:
-        secure = " Secure;" if self.headers.get("X-Forwarded-Proto", "") == "https" else ""
+        secure = " Secure;" if self.headers.get("X-Forwarded-Proto", "") == "https" or os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID") else ""
         self.send_header("Set-Cookie", f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_HOURS * 3600};{secure}")
 
     def clear_session_cookie(self) -> None:
@@ -2526,11 +2526,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"authenticated": True, "user": user, "setup_required": False})
             elif path.startswith("/api/"):
                 user = require_login(self)
-                if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/users", "/api/active-users"}:
+                if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/audit", "/api/users", "/api/active-users"}:
                     require_role(user, "ADMINISTRADOR")
                 if path == "/api/users":
                     self.send_json({"users": list_users()})
-                elif path == "/api/audit-log":
+                elif path in {"/api/audit-log", "/api/audit"}:
                     self.send_json({"rows": audit_rows(query)})
                 elif path == "/api/active-users":
                     self.send_json({"rows": active_users()})
