@@ -2512,7 +2512,18 @@ class Handler(BaseHTTPRequestHandler):
                 user = get_current_user(self)
                 with db() as con:
                     user_count = con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-                self.send_json({"authenticated": bool(user), "user": user, "setup_required": user_count == 0})
+                if not user:
+                    self.send_json(
+                        {
+                            "authenticated": False,
+                            "user": None,
+                            "setup_required": user_count == 0,
+                            "error": "Debe iniciar sesión.",
+                        },
+                        401,
+                    )
+                else:
+                    self.send_json({"authenticated": True, "user": user, "setup_required": False})
             elif path.startswith("/api/"):
                 user = require_login(self)
                 if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/users", "/api/active-users"}:
@@ -2754,7 +2765,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if canonical(user.get("role")) == "CONSULTA":
                 raise PermissionError("El rol Consulta es solo lectura.")
-            if path == "/api/users/create":
+            if path in {"/api/users", "/api/users/create"}:
                 require_role(user, "ADMINISTRADOR")
                 create_user(payload, user, self.client_ip())
                 self.send_json({"ok": True, "users": list_users()})
@@ -2765,6 +2776,11 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/users/reset-password":
                 require_role(user, "ADMINISTRADOR")
                 reset_user_password(int(payload.get("id") or 0), str(payload.get("password") or ""), user, self.client_ip())
+                self.send_json({"ok": True, "users": list_users()})
+            elif re.fullmatch(r"/api/users/\d+/reset-password", path):
+                require_role(user, "ADMINISTRADOR")
+                user_id = int(path.strip("/").split("/")[2])
+                reset_user_password(user_id, str(payload.get("password") or ""), user, self.client_ip())
                 self.send_json({"ok": True, "users": list_users()})
             elif path == "/api/import":
                 planning_date = payload.get("date", "")
@@ -2844,6 +2860,26 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             else:
                 self.send_error(404)
+        except ValueError as exc:
+            self.send_json({"error": str(exc)}, 400)
+        except PermissionError as exc:
+            self.send_json({"error": str(exc)}, 401 if "sesión" in str(exc) else 403)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, 500)
+
+
+    def do_PUT(self) -> None:
+        path = urlparse(self.path).path
+        try:
+            payload = self.read_json()
+            user = require_login(self)
+            require_role(user, "ADMINISTRADOR")
+            match = re.fullmatch(r"/api/users/(\d+)", path)
+            if not match:
+                self.send_error(404)
+                return
+            update_user(int(match.group(1)), payload, user, self.client_ip())
+            self.send_json({"ok": True, "users": list_users()})
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)
         except PermissionError as exc:
