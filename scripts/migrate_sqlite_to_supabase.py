@@ -286,7 +286,7 @@ def allowed_values_for_column(checks: list[str], column: str) -> set[str]:
     for check in checks:
         if column not in check:
             continue
-        allowed.update(match.upper() for match in re.findall(r"'([^']+)'", check))
+        allowed.update(match for match in re.findall(r"'([^']+)'", check))
     return allowed
 
 
@@ -295,12 +295,12 @@ def normalize_division_for_target(value: Any, allowed_values: set[str] | None = 
         return None
     full = normalize_division_value(value)
     short = short_division_value(value)
-    allowed = {canonical(item) for item in (allowed_values or set())}
+    allowed = {canonical(item): item for item in (allowed_values or set())}
     if allowed:
         if short in allowed:
-            return short
+            return allowed[short]
         if full in allowed:
-            return full
+            return allowed[full]
         return None
     return short
 
@@ -428,10 +428,14 @@ def foreign_keys(pg: Any, table: str) -> list[dict[str, str]]:
 
 
 def check_constraints(pg: Any, table: str) -> list[str]:
+    return list(check_constraint_definitions(pg, table).values())
+
+
+def check_constraint_definitions(pg: Any, table: str) -> dict[str, str]:
     with pg.cursor() as cur:
         cur.execute(
             """
-            select pg_get_constraintdef(c.oid)
+            select c.conname, pg_get_constraintdef(c.oid)
             from pg_constraint c
             join pg_class r on r.oid = c.conrelid
             join pg_namespace n on n.oid = r.relnamespace
@@ -442,7 +446,29 @@ def check_constraints(pg: Any, table: str) -> list[str]:
             """,
             (table,),
         )
-        return [str(row[0]) for row in cur.fetchall()]
+        return {str(row[0]): str(row[1]) for row in cur.fetchall()}
+
+
+def print_check_constraints_report(pg: Any, tables: list[str]) -> None:
+    seen: set[str] = set()
+    print("CHECK constraints PostgreSQL detectados:")
+    for table in tables:
+        if table in seen or not target_table_exists(pg, table):
+            continue
+        seen.add(table)
+        definitions = check_constraint_definitions(pg, table)
+        if not definitions:
+            print(f"- {table}: sin CHECK constraints")
+            continue
+        metadata = target_column_metadata(pg, table)
+        for name, definition in definitions.items():
+            allowed_parts: list[str] = []
+            for column in metadata:
+                values = allowed_values_for_column([definition], column)
+                if values:
+                    allowed_parts.append(f"{column}: {', '.join(sorted(values))}")
+            allowed_text = "; ".join(allowed_parts) if allowed_parts else "valores permitidos no inferidos"
+            print(f"- {table}.{name}: {allowed_text} | {definition}")
 
 
 def target_table_exists(pg: Any, table: str) -> bool:
@@ -560,6 +586,7 @@ def get_planning_day_model(pg: Any) -> dict[str, Any] | None:
         "date_column": date_column,
         "division_column": division_column,
         "metadata": metadata,
+        "checks": check_constraints(pg, day_table),
     }
 
 
@@ -596,6 +623,7 @@ def get_day_model(
         "date_column": date_column,
         "division_column": division_column,
         "metadata": metadata,
+        "checks": check_constraints(pg, day_table),
     }
 
 
@@ -630,8 +658,12 @@ def find_planning_day_id(pg: Any, model: dict[str, Any], planning_date: str, div
     division_column = qident(model["division_column"]) if model["division_column"] else None
     if division_column:
         with pg.cursor() as cur:
-            candidates = [division, short_division_value(division)]
+            allowed_values = allowed_values_for_column(model.get("checks", []), model["division_column"])
+            target_division = normalize_division_for_target(division, allowed_values)
+            candidates = [target_division, division, short_division_value(division)]
             for candidate in dict.fromkeys(candidates):
+                if candidate is None:
+                    continue
                 cur.execute(
                     f"select {id_column} from {table} where {date_column}=%s and {division_column}=%s limit 1",
                     (planning_date, candidate),
@@ -660,7 +692,14 @@ def insert_planning_day(pg: Any, model: dict[str, Any], planning_date: str, divi
         row[id_column] = planning_day_uuid(table, planning_date, division)
     row[date_column] = planning_date
     if division_column:
-        row[division_column] = short_division_value(division)
+        allowed_values = allowed_values_for_column(model.get("checks", []), division_column)
+        target_division = normalize_division_for_target(division, allowed_values)
+        if target_division is None:
+            allowed_text = ", ".join(sorted(allowed_values)) if allowed_values else "sin valores detectados"
+            raise RuntimeError(
+                f"No se pudo normalizar {table}.{division_column}={division!r}. Valores permitidos: {allowed_text}."
+            )
+        row[division_column] = target_division
 
     for column, info in metadata.items():
         if column in row:
@@ -1182,6 +1221,7 @@ def main() -> None:
 
     if args.dry_run:
         with psycopg_module.connect(db_url) as pg:
+            print_check_constraints_report(pg, ["dias_operativos", *tables])
             report_planning_days_dry_run(pg, source_payload.get("planning_routes", ([], []))[1])
             for table in tables:
                 if not target_table_exists(pg, table):
@@ -1197,6 +1237,7 @@ def main() -> None:
     if args.preflight_real:
         with psycopg_module.connect(db_url) as pg:
             try:
+                print_check_constraints_report(pg, ["dias_operativos", *tables])
                 day_map = ensure_planning_days(pg, route_rows)
                 dia_operativo_map = ensure_dias_operativos(pg, route_rows)
                 unresolved = attach_planning_day_ids(route_rows, day_map)
