@@ -676,6 +676,50 @@ def attach_planning_day_ids(rows: list[dict[str, Any]], day_map: dict[tuple[str,
     return unresolved
 
 
+def route_lookup_by_legacy_id(route_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {str(row.get("id") or "").strip(): row for row in route_rows if str(row.get("id") or "").strip()}
+
+
+def resolve_recarga_day_id(
+    recarga_row: dict[str, Any],
+    day_map: dict[tuple[str, str], Any] | None,
+    route_lookup: dict[str, dict[str, Any]] | None,
+) -> Any | None:
+    if not day_map:
+        return None
+    recarga_date = normalize_date_value(recarga_row.get("recarga_date") or recarga_row.get("planning_date"))
+    route = (route_lookup or {}).get(str(recarga_row.get("route_id") or "").strip())
+    if route:
+        planning_date = recarga_date or normalize_date_value(route.get("planning_date"))
+        division = normalize_division_value(route.get("division"))
+        if planning_date:
+            return day_map.get((planning_date, division))
+
+    if recarga_date:
+        matches = [day_id for (planning_date, _division), day_id in day_map.items() if planning_date == recarga_date]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def recarga_context(recarga_row: dict[str, Any], route_lookup: dict[str, dict[str, Any]] | None) -> str:
+    route = (route_lookup or {}).get(str(recarga_row.get("route_id") or "").strip())
+    parts = [f"{key}={recarga_row.get(key)!r}" for key in sorted(recarga_row)]
+    if route:
+        parts.append(
+            "ruta="
+            + repr(
+                {
+                    "id": route.get("id"),
+                    "planning_date": route.get("planning_date"),
+                    "division": route.get("division"),
+                    "domain": route.get("domain"),
+                }
+            )
+        )
+    return "; ".join(parts)
+
+
 def legacy_value(row: dict[str, Any], table: str, column: str) -> Any:
     aliases = TABLE_COLUMN_ALIASES.get(table, {}).get(column, [column])
     for alias in aliases:
@@ -718,6 +762,7 @@ def prepare_pg_row(
     metadata: dict[str, dict[str, Any]],
     checks: list[str],
     day_map: dict[tuple[str, str], Any] | None = None,
+    route_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     prepared: dict[str, Any] = {}
     errors: list[str] = []
@@ -731,6 +776,12 @@ def prepare_pg_row(
             planning_date = normalize_date_value(legacy_row.get("planning_date")) or ""
             division = normalize_division_value(legacy_row.get("division"))
             raw_value = (day_map or {}).get((planning_date, division))
+        elif table == "recargas" and column == "dia_operativo_id":
+            raw_value = resolve_recarga_day_id(legacy_row, day_map, route_lookup)
+            if raw_value is None:
+                errors.append(
+                    f"recargas legacy_id={legacy_id}: no se pudo resolver dia_operativo_id. {recarga_context(legacy_row, route_lookup)}"
+                )
         elif table == "recargas" and column == "route_id" and data_type == "uuid":
             raw_value = deterministic_legacy_uuid("planning_routes", legacy_row.get("route_id"))
         elif column == "id":
@@ -744,7 +795,7 @@ def prepare_pg_row(
         if value in (None, ""):
             required_aliases = REQUIRED_STRING_ALIASES.get((table, column), [])
             original_detail = ", ".join(f"{alias}={legacy_row.get(alias)!r}" for alias in required_aliases if alias in legacy_row)
-            if required:
+            if required and not (table == "recargas" and column == "dia_operativo_id"):
                 errors.append(
                     f"{table} legacy_id={legacy_id}: columna obligatoria {column} queda vacía. {original_detail}".strip()
                 )
@@ -761,11 +812,12 @@ def prepare_table_rows(
     metadata: dict[str, dict[str, Any]],
     checks: list[str],
     day_map: dict[tuple[str, str], Any] | None = None,
+    route_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     prepared_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     for legacy_row in legacy_rows:
-        prepared, row_errors = prepare_pg_row(table, legacy_row, metadata, checks, day_map)
+        prepared, row_errors = prepare_pg_row(table, legacy_row, metadata, checks, day_map, route_lookup)
         if row_errors:
             errors.extend(row_errors)
         else:
@@ -890,13 +942,20 @@ def execute_schema(pg: Any) -> None:
         cur.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
-def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, Any]], day_map: dict[tuple[str, str], Any] | None = None) -> int:
+def upsert_rows(
+    pg: Any,
+    table: str,
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    day_map: dict[tuple[str, str], Any] | None = None,
+    route_lookup: dict[str, dict[str, Any]] | None = None,
+) -> int:
     if not rows:
         return 0
     normalized_rows = [normalize_row(row) for row in rows]
     metadata = target_column_metadata(pg, table)
     checks = check_constraints(pg, table)
-    prepared_rows, errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map)
+    prepared_rows, errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map, route_lookup)
     if errors:
         raise ValueError("\n".join(errors))
     for row in prepared_rows:
@@ -934,6 +993,7 @@ def prepare_all_tables(
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     prepared: dict[str, list[dict[str, Any]]] = {}
     errors: list[str] = []
+    route_lookup = route_lookup_by_legacy_id(source_payload.get("planning_routes", ([], []))[1])
     for table in tables:
         if not target_table_exists(pg, table):
             errors.append(f"{table}: tabla ausente en Supabase.")
@@ -942,7 +1002,7 @@ def prepare_all_tables(
         normalized_rows = [normalize_row(row) for row in rows]
         metadata = target_column_metadata(pg, table)
         checks = check_constraints(pg, table)
-        table_rows, table_errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map)
+        table_rows, table_errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map, route_lookup)
         prepared[table] = table_rows
         errors.extend(table_errors)
     return prepared, errors
