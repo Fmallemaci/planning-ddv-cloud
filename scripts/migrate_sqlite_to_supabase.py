@@ -15,7 +15,7 @@ APP_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SQLITE = APP_DIR / "data" / "operations_ddv.db"
 SCHEMA_SQL = APP_DIR / "sql" / "supabase_schema.sql"
 
-TABLES = [
+OPERATIONAL_TABLES = [
     "planning_routes",
     "employees",
     "vehicle_people",
@@ -24,10 +24,27 @@ TABLES = [
     "personnel_novelties",
     "recargas",
     "mail_log",
+]
+
+AUTH_TABLES = [
     "users",
     "user_sessions",
     "audit_log",
 ]
+
+TABLES = OPERATIONAL_TABLES
+
+CONFLICT_COLUMNS = {
+    "planning_routes": ["planning_date", "division", "domain", "domain_seq"],
+    "employees": ["name"],
+    "vehicle_people": ["domain", "employee_name", "role"],
+    "localities": ["name", "division"],
+    "employee_locality_roles": ["employee_name", "division", "locality"],
+    "personnel_novelties": ["novelty_date", "employee_name"],
+    "recargas": ["route_id", "employee_name", "role"],
+    "users": ["username"],
+    "user_sessions": ["token_hash"],
+}
 
 DATE_COLUMN_NAMES = {
     "planning_date",
@@ -187,6 +204,19 @@ def target_columns(pg: Any, table: str) -> set[str]:
         return {str(row[0]) for row in cur.fetchall()}
 
 
+def target_table_exists(pg: Any, table: str) -> bool:
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            select 1
+            from information_schema.tables
+            where table_schema='public' and table_name=%s
+            """,
+            (table,),
+        )
+        return cur.fetchone() is not None
+
+
 def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]]:
     with sqlite3.connect(path) as con:
         con.row_factory = sqlite3.Row
@@ -211,6 +241,9 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
         return 0
     rows = [normalize_row(row) for row in rows]
     target_cols = target_columns(pg, table)
+    columns = [column for column in columns if column in target_cols]
+    if not columns:
+        return 0
     if table in {"audit_log", "user_sessions"} and "user_id" in columns:
         for row in rows:
             row["user_id"] = normalize_uuid_value(row.get("user_id"))
@@ -226,14 +259,27 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
             row["division"] = normalize_audit_division_value(row.get("division"))
             if "entity_name" in columns:
                 row["entity_name"] = safe_text(row.get("entity_name"))
+    conflict_cols = [column for column in CONFLICT_COLUMNS.get(table, ["id"]) if column in columns]
+    if not conflict_cols:
+        conflict_cols = ["id"] if "id" in columns else []
     col_sql = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
-    update_cols = [col for col in columns if col != "id"]
+    update_cols = [col for col in columns if col not in {"id", *conflict_cols}]
     update_sql = ", ".join(f"{col}=excluded.{col}" for col in update_cols)
-    sql = (
-        f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders}) "
-        f"ON CONFLICT (id) DO UPDATE SET {update_sql}"
-    )
+    if conflict_cols and update_sql:
+        conflict_sql = ", ".join(conflict_cols)
+        sql = (
+            f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders}) "
+            f"ON CONFLICT ({conflict_sql}) DO UPDATE SET {update_sql}"
+        )
+    elif conflict_cols:
+        conflict_sql = ", ".join(conflict_cols)
+        sql = (
+            f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders}) "
+            f"ON CONFLICT ({conflict_sql}) DO NOTHING"
+        )
+    else:
+        sql = f"INSERT INTO {table} ({col_sql}) VALUES ({placeholders})"
     values = [tuple(row.get(col) for col in columns) for row in rows]
     with pg.cursor() as cur:
         cur.executemany(sql, values)
@@ -266,15 +312,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Migra Planning DDV de SQLite a Supabase PostgreSQL.")
     parser.add_argument("--sqlite", default=str(DEFAULT_SQLITE), help="Ruta a operations_ddv.db")
     parser.add_argument("--dry-run", action="store_true", help="Solo informa conteos de SQLite.")
+    parser.add_argument(
+        "--include-auth",
+        action="store_true",
+        help="Incluye users, user_sessions y audit_log. No usar para recuperar datos operativos si Supabase ya tiene usuarios.",
+    )
     args = parser.parse_args()
 
     sqlite_path = Path(args.sqlite)
     if not sqlite_path.exists():
         raise SystemExit(f"No existe SQLite: {sqlite_path}")
 
+    tables = [*OPERATIONAL_TABLES, *(AUTH_TABLES if args.include_auth else [])]
     source_counts: dict[str, int] = {}
     source_payload: dict[str, tuple[list[str], list[dict[str, Any]]]] = {}
-    for table in TABLES:
+    for table in tables:
         columns, rows = sqlite_rows(sqlite_path, table)
         source_payload[table] = (columns, rows)
         source_counts[table] = len(rows)
@@ -282,6 +334,8 @@ def main() -> None:
     print("Filas SQLite detectadas:")
     for table, count in source_counts.items():
         print(f"- {table}: {count}")
+    if not args.include_auth:
+        print("Tablas de usuarios/sesiones/auditoría omitidas para preservar usuarios actuales de Supabase.")
 
     if args.dry_run:
         return
@@ -299,7 +353,10 @@ def main() -> None:
 
     with psycopg_module.connect(db_url) as pg:
         execute_schema(pg)
-        for table in TABLES:
+        for table in tables:
+            if not target_table_exists(pg, table):
+                print(f"Omitido {table}: no existe en Supabase.")
+                continue
             columns, rows = source_payload[table]
             inserted = upsert_rows(pg, table, columns, rows)
             reset_identity(pg, table)
