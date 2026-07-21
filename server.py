@@ -158,6 +158,25 @@ def normalize_route_output(row: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+PG_ROUTE_EFFECTIVE_DATE = "COALESCE(NULLIF(pr.planning_date::text, '')::date, d.fecha)"
+PG_ROUTE_EFFECTIVE_DIVISION = """
+CASE
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('TW', 'TRELEW') THEN 'TW'
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('PM', 'PUERTO MADRYN', 'PUERTO_MADRYN') THEN 'PM'
+    WHEN UPPER(TRIM(COALESCE(d.base, ''))) = 'TRELEW' THEN 'TW'
+    WHEN UPPER(TRIM(COALESCE(d.base, ''))) IN ('PM', 'PUERTO MADRYN', 'PUERTO_MADRYN') THEN 'PM'
+    ELSE UPPER(TRIM(COALESCE(pr.division, d.base, '')))
+END
+"""
+PG_ROUTE_LOCALITY_DIVISION = f"""
+CASE
+    WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 'TRELEW'
+    WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 'PUERTO MADRYN'
+    ELSE ({PG_ROUTE_EFFECTIVE_DIVISION})
+END
+"""
+
+
 def safe_number(value: Any) -> float:
     if value in (None, ""):
         return 0.0
@@ -761,7 +780,7 @@ def get_current_user(handler: BaseHTTPRequestHandler | None = None, token: str =
             SELECT u.*, s.id session_id
             FROM user_sessions s
             JOIN users u ON u.id=s.user_id
-            WHERE s.token_hash=? AND s.active=1 AND s.expires_at>? AND u.active=1
+            WHERE s.token_hash=? AND s.active=TRUE AND s.expires_at>? AND u.active=TRUE
             """,
             (token_digest, now),
         ).fetchone()
@@ -956,7 +975,7 @@ def init_db() -> None:
         for person in people:
             name = canonical(person["name"])
             roles = {canonical(r[0]) for r in con.execute(
-                "SELECT DISTINCT role FROM vehicle_people WHERE employee_name=? AND active=1", (name,)
+                "SELECT DISTINCT role FROM vehicle_people WHERE employee_name=? AND active=TRUE", (name,)
             )}
             can_driver = 1 if "CHOFER" in roles or canonical(person["primary_role"]) == "CHOFER" else 0
             can_helper = 1 if "AYUDANTE" in roles or canonical(person["primary_role"]) == "AYUDANTE" else 0
@@ -986,7 +1005,7 @@ def init_db() -> None:
         # Initial locality-role filters: preserve the current base locality as a starting point.
         filter_count = con.execute("SELECT COUNT(*) FROM employee_locality_roles").fetchone()[0]
         if not filter_count:
-            for person in con.execute("SELECT name,division,base_locality,can_driver,can_helper,active FROM employees WHERE active=1").fetchall():
+            for person in con.execute("SELECT name,division,base_locality,can_driver,can_helper,active FROM employees WHERE active=TRUE").fetchall():
                 locality = canonical(person["base_locality"])
                 if not locality:
                     continue
@@ -1167,24 +1186,50 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def route_rows(planning_date: str, division: str = "") -> list[dict[str, Any]]:
-    query = """
-        SELECT pr.*, COALESCE(l.sort_order,999) locality_order
-        FROM planning_routes pr
-        LEFT JOIN localities l ON l.name=pr.locality
-         AND l.division=CASE pr.division WHEN 'TW' THEN 'TRELEW' WHEN 'PM' THEN 'PUERTO MADRYN' ELSE pr.division END
-        WHERE pr.planning_date=?
-    """
+    if postgres_enabled():
+        query = f"""
+            SELECT pr.*, {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
+                   {PG_ROUTE_EFFECTIVE_DIVISION} division,
+                   COALESCE(l.sort_order,999) locality_order
+            FROM planning_routes pr
+            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            LEFT JOIN localities l ON l.name=pr.locality
+             AND l.division={PG_ROUTE_LOCALITY_DIVISION}
+            WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
+        """
+    else:
+        query = """
+            SELECT pr.*, COALESCE(l.sort_order,999) locality_order
+            FROM planning_routes pr
+            LEFT JOIN localities l ON l.name=pr.locality
+             AND l.division=CASE pr.division WHEN 'TW' THEN 'TRELEW' WHEN 'PM' THEN 'PUERTO MADRYN' ELSE pr.division END
+            WHERE pr.planning_date=?
+        """
     params: list[Any] = [planning_date]
     if division and division != "TODAS":
-        query += " AND pr.division=?"
+        query += f" AND {PG_ROUTE_EFFECTIVE_DIVISION if postgres_enabled() else 'pr.division'}=?"
         params.append(route_division_for_db(division))
-    query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+    if postgres_enabled():
+        query += f" ORDER BY CASE WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 1 WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+    else:
+        query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
     with db() as con:
         return [normalize_route_output(dict(r)) for r in con.execute(query, params).fetchall()]
 
 
 def dates_list() -> list[str]:
     with db() as con:
+        if postgres_enabled():
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date
+                FROM planning_routes pr
+                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                WHERE {PG_ROUTE_EFFECTIVE_DATE} IS NOT NULL
+                ORDER BY planning_date DESC
+                """
+            ).fetchall()
+            return [normalize_date_value(r[0]) or str(r[0] or "") for r in rows]
         return [
             normalize_date_value(r[0]) or str(r[0] or "")
             for r in con.execute("SELECT DISTINCT planning_date FROM planning_routes ORDER BY planning_date DESC").fetchall()
@@ -1219,18 +1264,18 @@ def options_for_routes(planning_date: str) -> dict[str, Any]:
             "SELECT employee_name FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
         ).fetchall()}
         employees = [dict(r) for r in con.execute(
-            "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=1 ORDER BY division,base_locality,name"
+            "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=TRUE ORDER BY division,base_locality,name"
         ).fetchall()]
         localities = [dict(r) for r in con.execute(
-            "SELECT name,division,sort_order FROM localities WHERE active=1 ORDER BY division,sort_order,name"
+            "SELECT name,division,sort_order FROM localities WHERE active=TRUE ORDER BY division,sort_order,name"
         ).fetchall()]
         preferred = [dict(r) for r in con.execute(
-            "SELECT domain,employee_name,role,priority FROM vehicle_people WHERE active=1 ORDER BY domain,role,priority"
+            "SELECT domain,employee_name,role,priority FROM vehicle_people WHERE active=TRUE ORDER BY domain,role,priority"
         ).fetchall()]
         employee_filters = [dict(r) for r in con.execute(
             """
             SELECT employee_name,division,locality,can_driver,can_helper
-            FROM employee_locality_roles WHERE active=1
+            FROM employee_locality_roles WHERE active=TRUE
             ORDER BY division,locality,employee_name
             """
         ).fetchall()]
@@ -1441,16 +1486,31 @@ def copy_last_assignments(planning_date: str) -> int:
 
 def summary(planning_date: str) -> dict[str, Any]:
     with db() as con:
-        row = con.execute(
-            """
-            SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
-                   COALESCE(SUM(hectoliters),0) hl,
-                   SUM(CASE WHEN driver='' THEN 1 ELSE 0 END) pending_driver,
-                   SUM(CASE WHEN locality='' THEN 1 ELSE 0 END) pending_locality,
-                   SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
-            FROM planning_routes WHERE planning_date=?
-            """, (planning_date,)
-        ).fetchone()
+        if postgres_enabled():
+            row = con.execute(
+                f"""
+                SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
+                       COALESCE(SUM(hectoliters),0) hl,
+                       SUM(CASE WHEN COALESCE(driver,'')='' THEN 1 ELSE 0 END) pending_driver,
+                       SUM(CASE WHEN COALESCE(locality,'')='' THEN 1 ELSE 0 END) pending_locality,
+                       SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
+                FROM planning_routes pr
+                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
+                """,
+                (planning_date,),
+            ).fetchone()
+        else:
+            row = con.execute(
+                """
+                SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
+                       COALESCE(SUM(hectoliters),0) hl,
+                       SUM(CASE WHEN driver='' THEN 1 ELSE 0 END) pending_driver,
+                       SUM(CASE WHEN locality='' THEN 1 ELSE 0 END) pending_locality,
+                       SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
+                FROM planning_routes WHERE planning_date=?
+                """, (planning_date,)
+            ).fetchone()
         recargas = con.execute("SELECT COALESCE(SUM(quantity),0) FROM recargas WHERE recarga_date=?", (planning_date,)).fetchone()[0]
     result = dict(row) if row else {}
     result["recargas"] = recargas
@@ -1462,7 +1522,7 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
     routes = route_rows(planning_date, division)
     assigned = {canonical(name) for r in routes for name in (r["driver"], r["helper1"], r["helper2"]) if canonical(name)}
     with db() as con:
-        query = "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=1"
+        query = "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=TRUE"
         params: list[Any] = []
         if division and division != "TODAS":
             query += " AND division=?"
@@ -1625,7 +1685,7 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                 )
             if clean_names:
                 placeholders = ",".join("?" for _ in clean_names)
-                con.execute(f"UPDATE employees SET active=0 WHERE name NOT IN ({placeholders})", tuple(clean_names))
+                con.execute(f"UPDATE employees SET active=FALSE WHERE name NOT IN ({placeholders})", tuple(clean_names))
         elif table == "localities":
             con.execute("DELETE FROM localities")
             for row in rows:
@@ -1718,14 +1778,25 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     division = canonical(params.get("division", ""))
     locality = canonical(params.get("locality", ""))
     employee = canonical(params.get("employee", ""))
-    query = """
-        SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
-               locality,observations,recarga_qty,kms,status
-        FROM planning_routes WHERE planning_date BETWEEN ? AND ?
-    """
+    if postgres_enabled():
+        query = f"""
+            SELECT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
+                   {PG_ROUTE_EFFECTIVE_DIVISION} division,
+                   pr.domain,pr.unit_id,pr.pdv,pr.bultos,pr.rendicion,pr.driver,pr.helper1,pr.helper2,
+                   pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status
+            FROM planning_routes pr
+            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            WHERE {PG_ROUTE_EFFECTIVE_DATE} BETWEEN ? AND ?
+        """
+    else:
+        query = """
+            SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
+                   locality,observations,recarga_qty,kms,status
+            FROM planning_routes WHERE planning_date BETWEEN ? AND ?
+        """
     qparams: list[Any] = [start, end]
     if division and division != "TODAS":
-        query += " AND division=?"; qparams.append(route_division_for_db(division))
+        query += f" AND {PG_ROUTE_EFFECTIVE_DIVISION if postgres_enabled() else 'division'}=?"; qparams.append(route_division_for_db(division))
     if locality:
         query += " AND UPPER(TRIM(locality)) LIKE ?"; qparams.append(f"%{locality}%")
     if employee:
@@ -2865,7 +2936,7 @@ def update_user(user_id: Any, payload: dict[str, Any], admin: dict[str, Any], ip
         if not previous:
             raise ValueError("El usuario no existe.")
         if str(previous.get("id")) == str(admin.get("id")) and active == 0:
-            active_admins = con.execute("SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND active=1 AND id<>?", (user_id,)).fetchone()[0]
+            active_admins = con.execute("SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND active=TRUE AND id<>?", (user_id,)).fetchone()[0]
             if not active_admins:
                 raise ValueError("No se puede desactivar el último administrador activo.")
         con.execute(
@@ -2894,7 +2965,7 @@ def reset_user_password(user_id: Any, password: str, admin: dict[str, Any], ip_a
             "UPDATE users SET password_hash=?, must_change_password=1, updated_at=? WHERE id=?",
             (hash_password(password), now_iso(), user_id),
         )
-        con.execute("UPDATE user_sessions SET active=0 WHERE user_id=?", (user_id,))
+        con.execute("UPDATE user_sessions SET active=FALSE WHERE user_id=?", (user_id,))
         register_audit_event(con, admin, "Restablecimiento de contraseña", "Usuarios", record_type="users", record_id=str(user_id), new_data={"username": row["username"]}, ip_address=ip_address)
     return {"ok": True}
 
@@ -2935,7 +3006,7 @@ def active_users() -> list[dict[str, Any]]:
             """
             SELECT u.username,u.display_name,u.role,u.assigned_base,MAX(s.last_activity) last_activity
             FROM user_sessions s JOIN users u ON u.id=s.user_id
-            WHERE s.active=1 AND s.last_activity>=?
+            WHERE s.active=TRUE AND s.last_activity>=?
             GROUP BY u.id,u.username,u.display_name,u.role,u.assigned_base
             ORDER BY last_activity DESC
             """,
@@ -3039,7 +3110,7 @@ class Handler(BaseHTTPRequestHandler):
         token = parsed[SESSION_COOKIE].value if SESSION_COOKIE in parsed else ""
         with db() as con:
             if token:
-                con.execute("UPDATE user_sessions SET active=0 WHERE token_hash=?", (hash_token(token),))
+                con.execute("UPDATE user_sessions SET active=FALSE WHERE token_hash=?", (hash_token(token),))
             register_audit_event(con, user, "Cierre de sesión", "Autenticación", ip_address=self.client_ip())
         self.send_auth_json({"ok": True}, clear_cookie=True)
 
@@ -3054,6 +3125,8 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path.lstrip("/")
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
+            elif path == "/api/health":
+                self.send_json({"ok": True, "status": "ready"})
             elif path == "/api/auth/me":
                 user = get_current_user(self)
                 with db() as con:
