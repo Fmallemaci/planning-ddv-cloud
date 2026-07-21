@@ -77,7 +77,7 @@ JSON_COLUMN_NAMES = {
 
 DATE_COLUMN_CANDIDATES = ["planning_date", "operational_date", "day_date", "date", "fecha"]
 DIVISION_COLUMN_CANDIDATES = ["division", "base", "assigned_base"]
-PLANNING_DAY_TABLE_CANDIDATES = ["planning_days", "operational_days", "days"]
+PLANNING_DAY_TABLE_CANDIDATES = ["planning_days", "dias_operativos", "operational_days", "days"]
 
 TABLE_COLUMN_ALIASES = {
     "employees": {
@@ -536,6 +536,7 @@ def get_planning_day_model(pg: Any) -> dict[str, Any] | None:
     route_types = target_column_types(pg, "planning_routes")
     if "planning_day_id" not in route_types:
         return None
+    return get_day_model(pg, "planning_routes", "planning_day_id")
 
     fk = foreign_key_target(pg, "planning_routes", "planning_day_id")
     if fk:
@@ -562,12 +563,55 @@ def get_planning_day_model(pg: Any) -> dict[str, Any] | None:
     }
 
 
-def planning_day_uuid(planning_date: Any, division: Any = "") -> str | None:
+def get_day_model(
+    pg: Any,
+    source_table: str,
+    source_column: str,
+    preferred_table: str | None = None,
+) -> dict[str, Any] | None:
+    fk = foreign_key_target(pg, source_table, source_column)
+    if preferred_table and target_table_exists(pg, preferred_table):
+        day_table = preferred_table
+        id_column = "id"
+        if fk and fk[0] == preferred_table:
+            id_column = fk[1]
+    elif fk:
+        day_table, id_column = fk
+    else:
+        day_table = next((table for table in PLANNING_DAY_TABLE_CANDIDATES if target_table_exists(pg, table)), "")
+        id_column = "id"
+    if not day_table:
+        raise RuntimeError(f"{source_table} requiere {source_column} pero no se encontro tabla de jornadas.")
+
+    metadata = target_column_metadata(pg, day_table)
+    if id_column not in metadata:
+        id_column = "id"
+    date_column = first_existing_column(metadata, DATE_COLUMN_CANDIDATES)
+    if not date_column:
+        raise RuntimeError(f"No se encontro columna de fecha en {day_table}.")
+    division_column = first_existing_column(metadata, DIVISION_COLUMN_CANDIDATES)
+    return {
+        "table": day_table,
+        "id_column": id_column,
+        "date_column": date_column,
+        "division_column": division_column,
+        "metadata": metadata,
+    }
+
+
+def get_dia_operativo_model(pg: Any) -> dict[str, Any] | None:
+    recargas_types = target_column_types(pg, "recargas")
+    if "dia_operativo_id" not in recargas_types:
+        return None
+    return get_day_model(pg, "recargas", "dia_operativo_id", preferred_table="dias_operativos")
+
+
+def planning_day_uuid(day_table: str, planning_date: Any, division: Any = "") -> str | None:
     clean_date = normalize_date_value(planning_date)
     if not clean_date:
         return None
     div = normalize_division_value(division)
-    return deterministic_legacy_uuid("planning_days", f"{clean_date}:{div}")
+    return deterministic_legacy_uuid(day_table, f"{clean_date}:{div}")
 
 
 def sqlite_planning_day_keys(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -613,7 +657,7 @@ def insert_planning_day(pg: Any, model: dict[str, Any], planning_date: str, divi
     row: dict[str, Any] = {}
 
     if metadata.get(id_column, {}).get("data_type") == "uuid":
-        row[id_column] = planning_day_uuid(planning_date, division)
+        row[id_column] = planning_day_uuid(table, planning_date, division)
     row[date_column] = planning_date
     if division_column:
         row[division_column] = short_division_value(division)
@@ -649,8 +693,11 @@ def insert_planning_day(pg: Any, model: dict[str, Any], planning_date: str, divi
     return result[0] if result else find_planning_day_id(pg, model, planning_date, division)
 
 
-def ensure_planning_days(pg: Any, route_rows: list[dict[str, Any]]) -> dict[tuple[str, str], Any]:
-    model = get_planning_day_model(pg)
+def ensure_day_rows_for_model(
+    pg: Any,
+    route_rows: list[dict[str, Any]],
+    model: dict[str, Any] | None,
+) -> dict[tuple[str, str], Any]:
     if not model:
         return {}
     day_map: dict[tuple[str, str], Any] = {}
@@ -660,6 +707,14 @@ def ensure_planning_days(pg: Any, route_rows: list[dict[str, Any]]) -> dict[tupl
             day_id = insert_planning_day(pg, model, planning_date, division)
         day_map[(planning_date, division)] = day_id
     return day_map
+
+
+def ensure_planning_days(pg: Any, route_rows: list[dict[str, Any]]) -> dict[tuple[str, str], Any]:
+    return ensure_day_rows_for_model(pg, route_rows, get_planning_day_model(pg))
+
+
+def ensure_dias_operativos(pg: Any, route_rows: list[dict[str, Any]]) -> dict[tuple[str, str], Any]:
+    return ensure_day_rows_for_model(pg, route_rows, get_dia_operativo_model(pg))
 
 
 def attach_planning_day_ids(rows: list[dict[str, Any]], day_map: dict[tuple[str, str], Any]) -> int:
@@ -762,6 +817,7 @@ def prepare_pg_row(
     metadata: dict[str, dict[str, Any]],
     checks: list[str],
     day_map: dict[tuple[str, str], Any] | None = None,
+    dia_operativo_map: dict[tuple[str, str], Any] | None = None,
     route_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     prepared: dict[str, Any] = {}
@@ -777,7 +833,7 @@ def prepare_pg_row(
             division = normalize_division_value(legacy_row.get("division"))
             raw_value = (day_map or {}).get((planning_date, division))
         elif table == "recargas" and column == "dia_operativo_id":
-            raw_value = resolve_recarga_day_id(legacy_row, day_map, route_lookup)
+            raw_value = resolve_recarga_day_id(legacy_row, dia_operativo_map, route_lookup)
             if raw_value is None:
                 errors.append(
                     f"recargas legacy_id={legacy_id}: no se pudo resolver dia_operativo_id. {recarga_context(legacy_row, route_lookup)}"
@@ -812,12 +868,13 @@ def prepare_table_rows(
     metadata: dict[str, dict[str, Any]],
     checks: list[str],
     day_map: dict[tuple[str, str], Any] | None = None,
+    dia_operativo_map: dict[tuple[str, str], Any] | None = None,
     route_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     prepared_rows: list[dict[str, Any]] = []
     errors: list[str] = []
     for legacy_row in legacy_rows:
-        prepared, row_errors = prepare_pg_row(table, legacy_row, metadata, checks, day_map, route_lookup)
+        prepared, row_errors = prepare_pg_row(table, legacy_row, metadata, checks, day_map, dia_operativo_map, route_lookup)
         if row_errors:
             errors.extend(row_errors)
         else:
@@ -948,6 +1005,7 @@ def upsert_rows(
     columns: list[str],
     rows: list[dict[str, Any]],
     day_map: dict[tuple[str, str], Any] | None = None,
+    dia_operativo_map: dict[tuple[str, str], Any] | None = None,
     route_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> int:
     if not rows:
@@ -955,7 +1013,15 @@ def upsert_rows(
     normalized_rows = [normalize_row(row) for row in rows]
     metadata = target_column_metadata(pg, table)
     checks = check_constraints(pg, table)
-    prepared_rows, errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map, route_lookup)
+    prepared_rows, errors = prepare_table_rows(
+        table,
+        normalized_rows,
+        metadata,
+        checks,
+        day_map,
+        dia_operativo_map,
+        route_lookup,
+    )
     if errors:
         raise ValueError("\n".join(errors))
     for row in prepared_rows:
@@ -990,6 +1056,7 @@ def prepare_all_tables(
     tables: list[str],
     source_payload: dict[str, tuple[list[str], list[dict[str, Any]]]],
     day_map: dict[tuple[str, str], Any],
+    dia_operativo_map: dict[tuple[str, str], Any] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], list[str]]:
     prepared: dict[str, list[dict[str, Any]]] = {}
     errors: list[str] = []
@@ -1002,14 +1069,29 @@ def prepare_all_tables(
         normalized_rows = [normalize_row(row) for row in rows]
         metadata = target_column_metadata(pg, table)
         checks = check_constraints(pg, table)
-        table_rows, table_errors = prepare_table_rows(table, normalized_rows, metadata, checks, day_map, route_lookup)
+        table_rows, table_errors = prepare_table_rows(
+            table,
+            normalized_rows,
+            metadata,
+            checks,
+            day_map,
+            dia_operativo_map,
+            route_lookup,
+        )
         prepared[table] = table_rows
         errors.extend(table_errors)
     return prepared, errors
 
 
-def print_prepared_summary(prepared: dict[str, list[dict[str, Any]]], day_count: int) -> None:
-    print(f"planning_days: {day_count}")
+def print_prepared_summary(
+    prepared: dict[str, list[dict[str, Any]]],
+    day_count: int,
+    dia_operativo_count: int | None = None,
+) -> None:
+    if dia_operativo_count is None:
+        print(f"planning_days/dias_operativos: {day_count}")
+    else:
+        print(f"planning_days/dias_operativos: {day_count}/{dia_operativo_count}")
     for table in OPERATIONAL_TABLES:
         print(f"{table}: {len(prepared.get(table, []))}")
     employees = prepared.get("employees", [])
@@ -1116,13 +1198,14 @@ def main() -> None:
         with psycopg_module.connect(db_url) as pg:
             try:
                 day_map = ensure_planning_days(pg, route_rows)
+                dia_operativo_map = ensure_dias_operativos(pg, route_rows)
                 unresolved = attach_planning_day_ids(route_rows, day_map)
                 validation_errors = []
                 if unresolved:
                     validation_errors.append(f"No se pudo resolver planning_day_id para {unresolved} rutas.")
-                prepared, row_errors = prepare_all_tables(pg, tables, source_payload, day_map)
+                prepared, row_errors = prepare_all_tables(pg, tables, source_payload, day_map, dia_operativo_map)
                 validation_errors.extend(row_errors)
-                print_prepared_summary(prepared, len(day_map))
+                print_prepared_summary(prepared, len(day_map), len(dia_operativo_map))
                 if validation_errors:
                     print("Errores de preflight:")
                     for error in validation_errors:
@@ -1144,10 +1227,11 @@ def main() -> None:
 
     with psycopg_module.connect(db_url) as pg:
         day_map = ensure_planning_days(pg, route_rows)
+        dia_operativo_map = ensure_dias_operativos(pg, route_rows)
         unresolved = attach_planning_day_ids(route_rows, day_map)
         if unresolved:
             raise RuntimeError(f"No se pudo resolver planning_day_id para {unresolved} rutas.")
-        prepared, validation_errors = prepare_all_tables(pg, tables, source_payload, day_map)
+        prepared, validation_errors = prepare_all_tables(pg, tables, source_payload, day_map, dia_operativo_map)
         if validation_errors:
             for error in validation_errors:
                 print(f"- {error}")
