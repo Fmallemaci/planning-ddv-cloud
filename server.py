@@ -303,12 +303,16 @@ def can_edit_division(user: dict[str, Any], division: str) -> bool:
     role = canonical(user.get("role"))
     base = normalize_assigned_base(str(user.get("assigned_base") or ""), role)
     if role == "ADMINISTRADOR":
-        return True
+        if base == "TODAS":
+            return True
+        if not div or div == "TODAS":
+            return False
+        return display_division(div) == base
     if role == "CONSULTA":
         return False
     if not div or div == "TODAS":
         return False
-    return div == base
+    return display_division(div) == base
 
 
 def require_role(user: dict[str, Any] | None, *roles: str) -> dict[str, Any]:
@@ -1370,6 +1374,16 @@ def master_payload() -> dict[str, Any]:
             "employee_filters": employee_filters}
 
 
+def normalize_catalog_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        if "division" in item:
+            item["division"] = display_division(item.get("division"))
+        normalized.append(item)
+    return normalized
+
+
 def options_for_routes(planning_date: str) -> dict[str, Any]:
     with db() as con:
         novelty_names = {r[0] for r in con.execute(
@@ -1391,8 +1405,9 @@ def options_for_routes(planning_date: str) -> dict[str, Any]:
             ORDER BY division,locality,employee_name
             """
         ).fetchall()]
-    return {"employees": employees, "localities": localities, "preferred": preferred,
-            "employee_filters": employee_filters, "novelty_names": sorted(novelty_names)}
+    return {"employees": normalize_catalog_rows(employees), "localities": normalize_catalog_rows(localities),
+            "preferred": preferred, "employee_filters": normalize_catalog_rows(employee_filters),
+            "novelty_names": sorted(novelty_names)}
 
 
 def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confirm: bool = False) -> list[str]:
@@ -1409,7 +1424,7 @@ def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confi
         ).fetchall()}
         role_map = {
             canonical(r["name"]): {
-                "division": canonical(r["division"]),
+                "division": canonical(display_division(r["division"])),
                 "can_driver": int(r["can_driver"] or 0),
                 "can_helper": int(r["can_helper"] or 0),
                 "active": int(r["active"] or 0),
@@ -1457,7 +1472,7 @@ def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confi
             if not flags:
                 errors.append(f"{name} no existe en la base de personal.")
             else:
-                route_division = canonical(route.get("division"))
+                route_division = canonical(display_division(route.get("division")))
                 if not flags["active"]:
                     errors.append(f"{name} está inactivo en la base de personal.")
                 elif flags["division"] != route_division:
@@ -1473,10 +1488,45 @@ def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confi
 
 def sync_recargas(con: sqlite3.Connection, route_id: int) -> None:
     route = con.execute("SELECT * FROM planning_routes WHERE id=?", (route_id,)).fetchone()
-    con.execute("DELETE FROM recargas WHERE route_id=?", (route_id,))
     if not route:
         return
     qty = int(route["recarga_qty"] or 0)
+    if postgres_enabled():
+        recarga_date = normalize_date_value(route["planning_date"]) or str(route["planning_date"] or "")
+        base = display_division(route["division"])
+        day = con.execute(
+            """
+            INSERT INTO dias_operativos(fecha,base,estado)
+            VALUES(?,?,?)
+            ON CONFLICT(fecha,base) DO UPDATE SET fecha=excluded.fecha
+            RETURNING id
+            """,
+            (recarga_date, base, "BORRADOR"),
+        ).fetchone()
+        dia_operativo_id = str(day["id"] if isinstance(day, dict) else day[0]) if day else ""
+        if not dia_operativo_id:
+            raise ValueError(f"No se pudo resolver dia_operativo_id para recargas de {recarga_date} / {base}.")
+        con.execute("DELETE FROM recargas WHERE recarga_date=? AND dominio=?", (recarga_date, route["domain"]))
+        if qty <= 0 and "RECARGA" in canonical(route["observations"]):
+            qty = 1
+            con.execute("UPDATE planning_routes SET recarga_qty=1 WHERE id=?", (route_id,))
+        if qty <= 0:
+            return
+        start, end, _ = recarga_period(recarga_date)
+        for name, role in ((route["driver"], "CHOFER"), (route["helper1"], "AYUDANTE 1"), (route["helper2"], "AYUDANTE 2")):
+            name = canonical(name)
+            if not name:
+                continue
+            con.execute(
+                """
+                INSERT INTO recargas(dia_operativo_id,dominio,recarga_date,employee_name,role,quantity,period_start,period_end)
+                VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (dia_operativo_id, route["domain"], recarga_date, name, role, qty, start, end),
+            )
+        return
+
+    con.execute("DELETE FROM recargas WHERE route_id=?", (route_id,))
     if qty <= 0 and "RECARGA" in canonical(route["observations"]):
         qty = 1
         con.execute("UPDATE planning_routes SET recarga_qty=1 WHERE id=?", (route_id,))
@@ -1637,8 +1687,9 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
         query = f"SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE {active_condition('employees')}"
         params: list[Any] = []
         if division and division != "TODAS":
-            query += " AND division=?"
-            params.append(division)
+            variants = list(dict.fromkeys([display_division(division), route_division_for_db(division)]))
+            query += " AND division IN (" + ",".join("?" for _ in variants) + ")"
+            params.extend(variants)
         query += " ORDER BY division,base_locality,name"
         staff = con.execute(query, params).fetchall()
         saved = {canonical(r["employee_name"]): dict(r) for r in con.execute(
@@ -1652,7 +1703,7 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
         existing = saved.get(name, {})
         role = "CHOFER / AYUDANTE" if p["can_driver"] and p["can_helper"] else ("CHOFER" if p["can_driver"] else "AYUDANTE")
         output.append({
-            "employee_name": name, "division": p["division"], "base_locality": p["base_locality"],
+            "employee_name": name, "division": display_division(p["division"]), "base_locality": p["base_locality"],
             "role": role, "reason": existing.get("reason", ""), "notes": existing.get("notes", ""),
         })
     return output
