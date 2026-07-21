@@ -670,7 +670,7 @@ def db():
     if postgres_enabled():
         if psycopg is None:
             raise RuntimeError("Falta instalar psycopg para usar Supabase PostgreSQL.")
-        con = psycopg.connect(SUPABASE_DB_URL)
+        con = psycopg.connect(SUPABASE_DB_URL, connect_timeout=8)
         wrapped = PgConnectionCompat(con)
         try:
             yield wrapped

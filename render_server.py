@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import traceback
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -22,13 +24,24 @@ class RenderHandler(planning.Handler):
 
 
 def run() -> None:
-    planning.init_db()
-
+    print("Iniciando servidor", flush=True)
     host = "0.0.0.0"
     port = int(os.environ.get("PORT", "10000"))
-
     httpd = ThreadingHTTPServer((host, port), RenderHandler)
-    print(f"Planning DDV V5.7 activo en {host}:{port}", flush=True)
+    print(f"Puerto abierto en {host}:{port}", flush=True)
+
+    def initialize_schema() -> None:
+        try:
+            planning.init_db()
+            print("Esquema validado", flush=True)
+            print("Migración de datos omitida en arranque", flush=True)
+        except Exception:
+            print("Error validando esquema Supabase", flush=True)
+            traceback.print_exc()
+            httpd.shutdown()
+            os._exit(1)
+
+    threading.Thread(target=initialize_schema, name="schema-initializer", daemon=True).start()
     httpd.serve_forever()
 
 
