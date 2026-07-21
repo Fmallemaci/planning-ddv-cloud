@@ -103,6 +103,36 @@ def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def safe_text(value: Any, fallback: str = "N/D") -> str:
+    text = str(value or "").strip()
+    return text if text else fallback
+
+
+def audit_entity_name(row: dict[str, Any]) -> str:
+    for key in ("entity_name", "username"):
+        value = row.get(key)
+        if str(value or "").strip():
+            return f"Usuario {str(value).strip()}" if key == "username" else str(value).strip()
+    record_type = str(row.get("record_type") or "").strip()
+    record_id = str(row.get("record_id") or "").strip()
+    if record_type and record_id:
+        return f"{record_type} {record_id}"
+    return "N/D"
+
+
+def target_columns(pg: Any, table: str) -> set[str]:
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            select column_name
+            from information_schema.columns
+            where table_schema='public' and table_name=%s
+            """,
+            (table,),
+        )
+        return {str(row[0]) for row in cur.fetchall()}
+
+
 def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]]:
     with sqlite3.connect(path) as con:
         con.row_factory = sqlite3.Row
@@ -127,6 +157,18 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
     if not rows:
         return 0
     rows = [normalize_row(row) for row in rows]
+    target_cols = target_columns(pg, table)
+    if table == "audit_log":
+        if "entity_name" in target_cols and "entity_name" not in columns:
+            columns = [*columns, "entity_name"]
+            for row in rows:
+                row["entity_name"] = audit_entity_name(row)
+        for row in rows:
+            row["username"] = safe_text(row.get("username"))
+            row["action"] = safe_text(row.get("action"))
+            row["module"] = safe_text(row.get("module"))
+            if "entity_name" in columns:
+                row["entity_name"] = safe_text(row.get("entity_name"))
     col_sql = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
     update_cols = [col for col in columns if col != "id"]

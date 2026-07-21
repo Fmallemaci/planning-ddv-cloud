@@ -256,6 +256,40 @@ def require_base_access(user: dict[str, Any], division: str) -> None:
         raise PermissionError("No tiene permiso para modificar esa división.")
 
 
+def table_columns(con: Any, table: str) -> set[str]:
+    if postgres_enabled():
+        rows = con.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema='public' AND table_name=?
+            """,
+            (table,),
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+    return {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def safe_audit_text(value: Any, fallback: str = "N/D") -> str:
+    text = str(value or "").strip()
+    return text if text else fallback
+
+
+def audit_entity_name(user: dict[str, Any] | None, record_type: str = "", record_id: str = "", new_data: Any = None) -> str:
+    if isinstance(new_data, dict):
+        for key in ("entity_name", "username", "display_name", "name"):
+            value = new_data.get(key)
+            if str(value or "").strip():
+                if key == "username":
+                    return f"Usuario {canonical(value)}"
+                return str(value).strip()
+    if record_type and record_id:
+        return f"{canonical(record_type)} {record_id}".strip()
+    if user and str(user.get("username") or "").strip():
+        return f"Usuario {canonical(user.get('username'))}"
+    return "N/D"
+
+
 def register_audit_event(
     con: Any | None,
     user: dict[str, Any] | None,
@@ -287,25 +321,41 @@ def register_audit_event(
         return
     close_con = False
     try:
+        columns = [
+            "user_id",
+            "username",
+            "action",
+            "module",
+            "operational_date",
+            "division",
+            "record_type",
+            "record_id",
+            "previous_data",
+            "new_data",
+            "created_at",
+            "ip_address",
+        ]
+        values: list[Any] = [
+            user.get("id") if user else None,
+            safe_audit_text(user.get("username") if user else ""),
+            safe_audit_text(action),
+            safe_audit_text(module),
+            operational_date,
+            canonical(division),
+            str(record_type or ""),
+            str(record_id or ""),
+            json.dumps(previous_data, ensure_ascii=False, default=str) if previous_data is not None else "",
+            json.dumps(new_data, ensure_ascii=False, default=str) if new_data is not None else "",
+            now_iso(),
+            str(ip_address or ""),
+        ]
+        if "entity_name" in table_columns(con, "audit_log"):
+            columns.insert(4, "entity_name")
+            values.insert(4, audit_entity_name(user, record_type, record_id, new_data))
+        placeholders = ",".join("?" for _ in columns)
         con.execute(
-            """
-            INSERT INTO audit_log(user_id,username,action,module,operational_date,division,record_type,record_id,previous_data,new_data,created_at,ip_address)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                user.get("id") if user else None,
-                user.get("username") if user else "",
-                action,
-                module,
-                operational_date,
-                canonical(division),
-                record_type,
-                str(record_id or ""),
-                json.dumps(previous_data, ensure_ascii=False, default=str) if previous_data is not None else "",
-                json.dumps(new_data, ensure_ascii=False, default=str) if new_data is not None else "",
-                now_iso(),
-                ip_address,
-            ),
+            f"INSERT INTO audit_log({','.join(columns)}) VALUES({placeholders})",
+            tuple(values),
         )
         if close_con:
             con.commit()
