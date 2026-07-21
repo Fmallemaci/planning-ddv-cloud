@@ -529,6 +529,55 @@ def postgres_enabled() -> bool:
     return bool(SUPABASE_DB_URL)
 
 
+_PG_COLUMN_TYPE_CACHE: dict[tuple[str, str], str] = {}
+
+
+def pg_column_type(table: str, column: str) -> str:
+    if not postgres_enabled() or psycopg is None:
+        return ""
+    key = (table, column)
+    if key in _PG_COLUMN_TYPE_CACHE:
+        return _PG_COLUMN_TYPE_CACHE[key]
+    try:
+        with psycopg.connect(SUPABASE_DB_URL, connect_timeout=8) as con:
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT data_type
+                    FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name=%s AND column_name=%s
+                    LIMIT 1
+                    """,
+                    (table, column),
+                )
+                row = cur.fetchone()
+    except Exception as exc:
+        print(f"No se pudo leer tipo de columna {table}.{column}: {type(exc).__name__}: {exc}")
+        row = None
+    column_type = str(row[0] if row else "").lower()
+    _PG_COLUMN_TYPE_CACHE[key] = column_type
+    return column_type
+
+
+def active_condition(table: str, alias: str = "", column: str = "active", active: bool = True) -> str:
+    ref = f"{alias}.{column}" if alias else column
+    if not postgres_enabled():
+        return f"{ref}={1 if active else 0}"
+    column_type = pg_column_type(table, column)
+    if column_type == "boolean":
+        return f"{ref} IS {'TRUE' if active else 'FALSE'}"
+    if column_type in {"smallint", "integer", "bigint", "numeric"}:
+        return f"{ref}={1 if active else 0}"
+    expected = ("'1','true','t','yes','si'", "'0','false','f','no'")[0 if active else 1]
+    return f"LOWER(TRIM(COALESCE({ref}::text,''))) IN ({expected})"
+
+
+def active_value(table: str, active: bool = True, column: str = "active") -> int | bool:
+    if postgres_enabled() and pg_column_type(table, column) == "boolean":
+        return bool(active)
+    return 1 if active else 0
+
+
 def translate_sqlite_to_postgres(sql: str) -> str:
     translated = sql
     translated = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", translated, flags=re.I)
@@ -776,11 +825,11 @@ def get_current_user(handler: BaseHTTPRequestHandler | None = None, token: str =
     now = now_iso()
     with db() as con:
         row = con.execute(
-            """
+            f"""
             SELECT u.*, s.id session_id
             FROM user_sessions s
             JOIN users u ON u.id=s.user_id
-            WHERE s.token_hash=? AND s.active=TRUE AND s.expires_at>? AND u.active=TRUE
+            WHERE s.token_hash=? AND {active_condition('user_sessions', 's')} AND s.expires_at>? AND {active_condition('users', 'u')}
             """,
             (token_digest, now),
         ).fetchone()
@@ -975,7 +1024,7 @@ def init_db() -> None:
         for person in people:
             name = canonical(person["name"])
             roles = {canonical(r[0]) for r in con.execute(
-                "SELECT DISTINCT role FROM vehicle_people WHERE employee_name=? AND active=TRUE", (name,)
+                f"SELECT DISTINCT role FROM vehicle_people WHERE employee_name=? AND {active_condition('vehicle_people')}", (name,)
             )}
             can_driver = 1 if "CHOFER" in roles or canonical(person["primary_role"]) == "CHOFER" else 0
             can_helper = 1 if "AYUDANTE" in roles or canonical(person["primary_role"]) == "AYUDANTE" else 0
@@ -1005,7 +1054,7 @@ def init_db() -> None:
         # Initial locality-role filters: preserve the current base locality as a starting point.
         filter_count = con.execute("SELECT COUNT(*) FROM employee_locality_roles").fetchone()[0]
         if not filter_count:
-            for person in con.execute("SELECT name,division,base_locality,can_driver,can_helper,active FROM employees WHERE active=TRUE").fetchall():
+            for person in con.execute(f"SELECT name,division,base_locality,can_driver,can_helper,active FROM employees WHERE {active_condition('employees')}").fetchall():
                 locality = canonical(person["base_locality"])
                 if not locality:
                     continue
@@ -1264,18 +1313,18 @@ def options_for_routes(planning_date: str) -> dict[str, Any]:
             "SELECT employee_name FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
         ).fetchall()}
         employees = [dict(r) for r in con.execute(
-            "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=TRUE ORDER BY division,base_locality,name"
+            f"SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE {active_condition('employees')} ORDER BY division,base_locality,name"
         ).fetchall()]
         localities = [dict(r) for r in con.execute(
-            "SELECT name,division,sort_order FROM localities WHERE active=TRUE ORDER BY division,sort_order,name"
+            f"SELECT name,division,sort_order FROM localities WHERE {active_condition('localities')} ORDER BY division,sort_order,name"
         ).fetchall()]
         preferred = [dict(r) for r in con.execute(
-            "SELECT domain,employee_name,role,priority FROM vehicle_people WHERE active=TRUE ORDER BY domain,role,priority"
+            f"SELECT domain,employee_name,role,priority FROM vehicle_people WHERE {active_condition('vehicle_people')} ORDER BY domain,role,priority"
         ).fetchall()]
         employee_filters = [dict(r) for r in con.execute(
-            """
+            f"""
             SELECT employee_name,division,locality,can_driver,can_helper
-            FROM employee_locality_roles WHERE active=TRUE
+            FROM employee_locality_roles WHERE {active_condition('employee_locality_roles')}
             ORDER BY division,locality,employee_name
             """
         ).fetchall()]
@@ -1522,7 +1571,7 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
     routes = route_rows(planning_date, division)
     assigned = {canonical(name) for r in routes for name in (r["driver"], r["helper1"], r["helper2"]) if canonical(name)}
     with db() as con:
-        query = "SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE active=TRUE"
+        query = f"SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE {active_condition('employees')}"
         params: list[Any] = []
         if division and division != "TODAS":
             query += " AND division=?"
@@ -1685,7 +1734,7 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                 )
             if clean_names:
                 placeholders = ",".join("?" for _ in clean_names)
-                con.execute(f"UPDATE employees SET active=FALSE WHERE name NOT IN ({placeholders})", tuple(clean_names))
+                con.execute(f"UPDATE employees SET active=? WHERE name NOT IN ({placeholders})", (active_value("employees", False), *tuple(clean_names)))
         elif table == "localities":
             con.execute("DELETE FROM localities")
             for row in rows:
@@ -2936,7 +2985,7 @@ def update_user(user_id: Any, payload: dict[str, Any], admin: dict[str, Any], ip
         if not previous:
             raise ValueError("El usuario no existe.")
         if str(previous.get("id")) == str(admin.get("id")) and active == 0:
-            active_admins = con.execute("SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND active=TRUE AND id<>?", (user_id,)).fetchone()[0]
+            active_admins = con.execute(f"SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND {active_condition('users')} AND id<>?", (user_id,)).fetchone()[0]
             if not active_admins:
                 raise ValueError("No se puede desactivar el último administrador activo.")
         con.execute(
@@ -2965,7 +3014,7 @@ def reset_user_password(user_id: Any, password: str, admin: dict[str, Any], ip_a
             "UPDATE users SET password_hash=?, must_change_password=1, updated_at=? WHERE id=?",
             (hash_password(password), now_iso(), user_id),
         )
-        con.execute("UPDATE user_sessions SET active=FALSE WHERE user_id=?", (user_id,))
+        con.execute("UPDATE user_sessions SET active=? WHERE user_id=?", (active_value("user_sessions", False), user_id))
         register_audit_event(con, admin, "Restablecimiento de contraseña", "Usuarios", record_type="users", record_id=str(user_id), new_data={"username": row["username"]}, ip_address=ip_address)
     return {"ok": True}
 
@@ -3003,10 +3052,10 @@ def active_users() -> list[dict[str, Any]]:
     cutoff = (datetime.now() - timedelta(minutes=ACTIVE_SESSION_MINUTES)).isoformat(timespec="seconds")
     with db() as con:
         rows = con.execute(
-            """
+            f"""
             SELECT u.username,u.display_name,u.role,u.assigned_base,MAX(s.last_activity) last_activity
             FROM user_sessions s JOIN users u ON u.id=s.user_id
-            WHERE s.active=TRUE AND s.last_activity>=?
+            WHERE {active_condition('user_sessions', 's')} AND s.last_activity>=?
             GROUP BY u.id,u.username,u.display_name,u.role,u.assigned_base
             ORDER BY last_activity DESC
             """,
@@ -3093,9 +3142,9 @@ class Handler(BaseHTTPRequestHandler):
             con.execute(
                 """
                 INSERT INTO user_sessions(user_id,token_hash,created_at,expires_at,last_activity,ip_address,user_agent,active)
-                VALUES(?,?,?,?,?,?,?,1)
+                VALUES(?,?,?,?,?,?,?,?)
                 """,
-                (row["id"], token_digest, created, expires, created, self.client_ip(), self.headers.get("User-Agent", "")),
+                (row["id"], token_digest, created, expires, created, self.client_ip(), self.headers.get("User-Agent", ""), active_value("user_sessions")),
             )
             con.execute("UPDATE users SET last_login=?, updated_at=? WHERE id=?", (created, created, row["id"]))
             FAILED_LOGINS.pop(key, None)
@@ -3110,7 +3159,7 @@ class Handler(BaseHTTPRequestHandler):
         token = parsed[SESSION_COOKIE].value if SESSION_COOKIE in parsed else ""
         with db() as con:
             if token:
-                con.execute("UPDATE user_sessions SET active=FALSE WHERE token_hash=?", (hash_token(token),))
+                con.execute("UPDATE user_sessions SET active=? WHERE token_hash=?", (active_value("user_sessions", False), hash_token(token)))
             register_audit_event(con, user, "Cierre de sesión", "Autenticación", ip_address=self.client_ip())
         self.send_auth_json({"ok": True}, clear_cookie=True)
 
