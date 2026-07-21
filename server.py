@@ -601,8 +601,7 @@ class PgConnectionCompat:
 
     def executescript(self, script: str) -> None:
         with self.connection.cursor() as cursor:
-            for statement in [part.strip() for part in script.split(";") if part.strip()]:
-                cursor.execute(statement)
+            cursor.execute(script)
 
     def commit(self) -> None:
         self.connection.commit()

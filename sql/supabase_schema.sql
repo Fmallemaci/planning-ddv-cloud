@@ -274,6 +274,61 @@ alter table audit_log add column if not exists new_data text default '';
 alter table audit_log add column if not exists created_at text not null default to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS');
 alter table audit_log add column if not exists ip_address text default '';
 
+do $$
+declare
+    item record;
+    users_id_type text;
+begin
+    select data_type
+      into users_id_type
+      from information_schema.columns
+     where table_schema='public'
+       and table_name='users'
+       and column_name='id';
+
+    if users_id_type in ('bigint', 'integer', 'smallint') then
+        for item in
+            select conrelid::regclass::text as table_name, conname
+              from pg_constraint
+             where contype='f'
+               and conrelid in ('audit_log'::regclass, 'user_sessions'::regclass)
+               and confrelid='users'::regclass
+        loop
+            execute format('alter table %s drop constraint if exists %I', item.table_name, item.conname);
+        end loop;
+
+        alter table audit_log alter column user_id drop not null;
+        alter table audit_log alter column user_id type bigint
+        using (
+            case
+                when user_id is null then null
+                when user_id::text ~ '^[0-9]+$' then user_id::text::bigint
+                else null
+            end
+        );
+
+        alter table user_sessions alter column user_id drop not null;
+        alter table user_sessions alter column user_id type bigint
+        using (
+            case
+                when user_id is null then null
+                when user_id::text ~ '^[0-9]+$' then user_id::text::bigint
+                else null
+            end
+        );
+
+        alter table audit_log
+            add constraint audit_log_user_id_fkey
+            foreign key (user_id) references users(id) on delete set null
+            not valid;
+
+        alter table user_sessions
+            add constraint user_sessions_user_id_fkey
+            foreign key (user_id) references users(id) on delete cascade
+            not valid;
+    end if;
+end $$;
+
 create unique index if not exists idx_planning_routes_unique_route
 on planning_routes(planning_date, division, domain, domain_seq);
 create unique index if not exists idx_employees_name_unique on employees(name);

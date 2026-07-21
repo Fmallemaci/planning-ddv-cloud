@@ -163,8 +163,7 @@ def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]
 
 def execute_schema(pg: Any) -> None:
     with pg.cursor() as cur:
-        for statement in [part.strip() for part in SCHEMA_SQL.read_text(encoding="utf-8").split(";") if part.strip()]:
-            cur.execute(statement)
+        cur.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
 
 
 def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, Any]]) -> int:
