@@ -161,6 +161,27 @@ def normalize_json_value(value: Any) -> str | None:
         return None
 
 
+def normalize_bool_value(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "t", "yes", "y", "si", "sí", "activo", "activa"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "inactivo", "inactiva"}:
+        return False
+    return None
+
+
 def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     clean = dict(row)
     for column in TEMPORAL_COLUMN_NAMES:
@@ -319,6 +340,14 @@ def normalize_uuid_columns_for_target(table: str, rows: list[dict[str, Any]], ta
                 row[column] = normalize_uuid_value(row.get(column)) or deterministic_legacy_uuid("planning_routes", row.get(column))
             else:
                 row[column] = normalize_uuid_value(row.get(column))
+
+
+def normalize_bool_columns_for_target(rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
+    boolean_columns = {column for column, data_type in target_types.items() if data_type == "boolean"}
+    for row in rows:
+        for column in boolean_columns:
+            if column in row:
+                row[column] = normalize_bool_value(row.get(column))
 
 
 def first_existing_column(metadata: dict[str, dict[str, Any]], candidates: list[str]) -> str | None:
@@ -527,6 +556,25 @@ def report_uuid_compatibility(table: str, columns: list[str], rows: list[dict[st
             print(f"  - {column}: compatible.")
 
 
+def report_bool_compatibility(table: str, columns: list[str], rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
+    boolean_columns = [column for column in columns if target_types.get(column) == "boolean"]
+    if not boolean_columns:
+        return
+    print(f"Compatibilidad boolean {table}: {', '.join(boolean_columns)}")
+    for column in boolean_columns:
+        converted = 0
+        pending = 0
+        for row in rows:
+            value = row.get(column)
+            normalized = normalize_bool_value(value)
+            if value is not None and str(value).strip() != "" and not isinstance(value, bool):
+                if normalized is None:
+                    pending += 1
+                else:
+                    converted += 1
+        print(f"  - {column}: {converted} valores convertidos; {pending} valores smallint/text pendientes.")
+
+
 def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]]:
     with sqlite3.connect(path) as con:
         con.row_factory = sqlite3.Row
@@ -558,6 +606,7 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
     if not columns:
         return 0
     normalize_uuid_columns_for_target(table, rows, target_types)
+    normalize_bool_columns_for_target(rows, target_types)
     if table in {"audit_log", "user_sessions"} and "user_id" in columns:
         for row in rows:
             row["user_id"] = normalize_uuid_value(row.get("user_id"))
@@ -681,7 +730,9 @@ def main() -> None:
                     print(f"Validación {table}: tabla ausente en Supabase.")
                     continue
                 columns, rows = source_payload[table]
-                report_uuid_compatibility(table, columns, rows, target_column_types(pg, table))
+                target_types = target_column_types(pg, table)
+                report_uuid_compatibility(table, columns, rows, target_types)
+                report_bool_compatibility(table, columns, rows, target_types)
                 print(f"Validación {table}: destino actual {count_pg(pg, table)} filas.")
         return
 
