@@ -304,6 +304,25 @@ def normalize_audit_division(con: Any, division: Any) -> str | None:
     return normalize_audit_division_value(division)
 
 
+def valid_uuid_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def audit_user_id(user: dict[str, Any] | None) -> Any:
+    if not user:
+        return None
+    value = user.get("id")
+    if postgres_enabled():
+        return valid_uuid_text(value)
+    return value
+
+
 def register_audit_event(
     con: Any | None,
     user: dict[str, Any] | None,
@@ -350,7 +369,7 @@ def register_audit_event(
             "ip_address",
         ]
         values: list[Any] = [
-            user.get("id") if user else None,
+            audit_user_id(user),
             safe_audit_text(user.get("username") if user else ""),
             safe_audit_text(action),
             safe_audit_text(module),
@@ -406,6 +425,8 @@ class CompatRow(dict):
     def _clean_value(value: Any) -> Any:
         if isinstance(value, Decimal):
             return float(value)
+        if isinstance(value, uuid.UUID):
+            return str(value)
         if isinstance(value, (datetime, date)):
             return value.isoformat()
         return value
@@ -2703,30 +2724,42 @@ def create_user(payload: dict[str, Any], admin: dict[str, Any], ip_address: str 
     if not username or not display_name or not password:
         raise ValueError("Debe completar usuario, nombre visible y contraseña provisoria.")
     with db() as con:
-        con.execute(
-            """
-            INSERT INTO users(username,display_name,password_hash,role,assigned_base,active,must_change_password,created_at,updated_at,created_by)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                username,
-                display_name,
-                hash_password(password),
-                role,
-                assigned_base,
-                int(truthy(payload.get("active"), True)),
-                int(truthy(payload.get("must_change_password"), True)),
-                now_iso(),
-                now_iso(),
-                admin.get("username", ""),
-            ),
+        params = (
+            username,
+            display_name,
+            hash_password(password),
+            role,
+            assigned_base,
+            int(truthy(payload.get("active"), True)),
+            int(truthy(payload.get("must_change_password"), True)),
+            now_iso(),
+            now_iso(),
+            admin.get("username", ""),
         )
-        user_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+        if postgres_enabled():
+            user_id = con.execute(
+                """
+                INSERT INTO users(username,display_name,password_hash,role,assigned_base,active,must_change_password,created_at,updated_at,created_by)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                RETURNING id
+                """,
+                params,
+            ).fetchone()[0]
+        else:
+            con.execute(
+                """
+                INSERT INTO users(username,display_name,password_hash,role,assigned_base,active,must_change_password,created_at,updated_at,created_by)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                params,
+            )
+            user_id = con.execute("SELECT last_insert_rowid()").fetchone()[0]
         register_audit_event(con, admin, "Creación de usuario", "Usuarios", record_type="users", record_id=str(user_id), new_data={"username": username, "role": role, "assigned_base": assigned_base}, ip_address=ip_address)
     return {"ok": True}
 
 
-def update_user(user_id: int, payload: dict[str, Any], admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+def update_user(user_id: Any, payload: dict[str, Any], admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
     if not user_id:
         raise ValueError("Usuario no válido.")
     role = normalize_role(str(payload.get("role") or "CONSULTA"))
@@ -2740,7 +2773,7 @@ def update_user(user_id: int, payload: dict[str, Any], admin: dict[str, Any], ip
         previous = row_dict(con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
         if not previous:
             raise ValueError("El usuario no existe.")
-        if int(previous.get("id")) == int(admin.get("id")) and active == 0:
+        if str(previous.get("id")) == str(admin.get("id")) and active == 0:
             active_admins = con.execute("SELECT COUNT(*) FROM users WHERE role='ADMINISTRADOR' AND active=1 AND id<>?", (user_id,)).fetchone()[0]
             if not active_admins:
                 raise ValueError("No se puede desactivar el último administrador activo.")
@@ -2756,7 +2789,10 @@ def update_user(user_id: int, payload: dict[str, Any], admin: dict[str, Any], ip
     return {"ok": True}
 
 
-def reset_user_password(user_id: int, password: str, admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+def reset_user_password(user_id: Any, password: str, admin: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        raise ValueError("Usuario no válido.")
     if not password:
         raise ValueError("Debe indicar una contraseña provisoria.")
     with db() as con:
@@ -3192,15 +3228,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "users": list_users()})
             elif path == "/api/users/update":
                 require_role(user, "ADMINISTRADOR")
-                update_user(int(payload.get("id") or 0), payload, user, self.client_ip())
+                update_user(payload.get("id") or "", payload, user, self.client_ip())
                 self.send_json({"ok": True, "users": list_users()})
             elif path == "/api/users/reset-password":
                 require_role(user, "ADMINISTRADOR")
-                reset_user_password(int(payload.get("id") or 0), str(payload.get("password") or ""), user, self.client_ip())
+                reset_user_password(payload.get("id") or "", str(payload.get("password") or ""), user, self.client_ip())
                 self.send_json({"ok": True, "users": list_users()})
-            elif re.fullmatch(r"/api/users/\d+/reset-password", path):
+            elif re.fullmatch(r"/api/users/[^/]+/reset-password", path):
                 require_role(user, "ADMINISTRADOR")
-                user_id = int(path.strip("/").split("/")[2])
+                user_id = path.strip("/").split("/")[2]
                 reset_user_password(user_id, str(payload.get("password") or ""), user, self.client_ip())
                 self.send_json({"ok": True, "users": list_users()})
             elif path == "/api/import":
@@ -3295,11 +3331,11 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             user = require_login(self)
             require_role(user, "ADMINISTRADOR")
-            match = re.fullmatch(r"/api/users/(\d+)", path)
+            match = re.fullmatch(r"/api/users/([^/]+)", path)
             if not match:
                 self.send_error(404)
                 return
-            update_user(int(match.group(1)), payload, user, self.client_ip())
+            update_user(match.group(1), payload, user, self.client_ip())
             self.send_json({"ok": True, "users": list_users()})
         except ValueError as exc:
             self.send_json({"error": str(exc)}, 400)

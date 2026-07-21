@@ -4,6 +4,7 @@ import argparse
 import os
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 from datetime import date, datetime
 from typing import Any
@@ -95,6 +96,16 @@ def normalize_date_value(value: Any, timestamp: bool = False) -> str | None:
     return None
 
 
+def normalize_uuid_value(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     clean = dict(row)
     for column in TEMPORAL_COLUMN_NAMES:
@@ -171,6 +182,9 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
         return 0
     rows = [normalize_row(row) for row in rows]
     target_cols = target_columns(pg, table)
+    if table in {"audit_log", "user_sessions"} and "user_id" in columns:
+        for row in rows:
+            row["user_id"] = normalize_uuid_value(row.get("user_id"))
     if table == "audit_log":
         if "entity_name" in target_cols and "entity_name" not in columns:
             columns = [*columns, "entity_name"]
