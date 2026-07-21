@@ -17,12 +17,12 @@ SCHEMA_SQL = APP_DIR / "sql" / "supabase_schema.sql"
 LEGACY_UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "planning-ddv-cloud/sqlite-migration")
 
 OPERATIONAL_TABLES = [
-    "planning_routes",
     "employees",
-    "vehicle_people",
     "localities",
+    "vehicle_people",
     "employee_locality_roles",
     "personnel_novelties",
+    "planning_routes",
     "recargas",
     "mail_log",
 ]
@@ -73,6 +73,10 @@ JSON_COLUMN_NAMES = {
     "metadata",
     "details",
 }
+
+DATE_COLUMN_CANDIDATES = ["planning_date", "operational_date", "day_date", "date", "fecha"]
+DIVISION_COLUMN_CANDIDATES = ["division", "base", "assigned_base"]
+PLANNING_DAY_TABLE_CANDIDATES = ["planning_days", "operational_days", "days"]
 
 
 def normalize_date_value(value: Any, timestamp: bool = False) -> str | None:
@@ -189,6 +193,24 @@ def canonical(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def normalize_division_value(value: Any) -> str:
+    div = canonical(value)
+    if div in {"TW", "TRELEW"}:
+        return "TRELEW"
+    if div in {"PM", "PUERTO MADRYN", "PUERTO_MADRYN"}:
+        return "PUERTO MADRYN"
+    return div
+
+
+def short_division_value(value: Any) -> str:
+    div = normalize_division_value(value)
+    if div == "TRELEW":
+        return "TW"
+    if div == "PUERTO MADRYN":
+        return "PM"
+    return div
+
+
 def normalize_audit_division_value(division: Any) -> str | None:
     div = canonical(division)
 
@@ -225,6 +247,26 @@ def target_column_types(pg: Any, table: str) -> dict[str, str]:
         return {str(row[0]): str(row[1]) for row in cur.fetchall()}
 
 
+def target_column_metadata(pg: Any, table: str) -> dict[str, dict[str, Any]]:
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            select column_name, data_type, is_nullable, column_default
+            from information_schema.columns
+            where table_schema='public' and table_name=%s
+            """,
+            (table,),
+        )
+        return {
+            str(row[0]): {
+                "data_type": str(row[1]),
+                "is_nullable": str(row[2]),
+                "column_default": row[3],
+            }
+            for row in cur.fetchall()
+        }
+
+
 def target_table_exists(pg: Any, table: str) -> bool:
     with pg.cursor() as cur:
         cur.execute(
@@ -238,6 +280,34 @@ def target_table_exists(pg: Any, table: str) -> bool:
         return cur.fetchone() is not None
 
 
+def qident(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def foreign_key_target(pg: Any, source_table: str, source_column: str) -> tuple[str, str] | None:
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            select ccu.table_name, ccu.column_name
+            from information_schema.table_constraints tc
+            join information_schema.key_column_usage kcu
+              on tc.constraint_name = kcu.constraint_name
+             and tc.table_schema = kcu.table_schema
+            join information_schema.constraint_column_usage ccu
+              on ccu.constraint_name = tc.constraint_name
+             and ccu.table_schema = tc.table_schema
+            where tc.constraint_type = 'FOREIGN KEY'
+              and tc.table_schema = 'public'
+              and tc.table_name = %s
+              and kcu.column_name = %s
+            limit 1
+            """,
+            (source_table, source_column),
+        )
+        row = cur.fetchone()
+        return (str(row[0]), str(row[1])) if row else None
+
+
 def normalize_uuid_columns_for_target(table: str, rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
     for row in rows:
         for column, data_type in target_types.items():
@@ -249,6 +319,199 @@ def normalize_uuid_columns_for_target(table: str, rows: list[dict[str, Any]], ta
                 row[column] = normalize_uuid_value(row.get(column)) or deterministic_legacy_uuid("planning_routes", row.get(column))
             else:
                 row[column] = normalize_uuid_value(row.get(column))
+
+
+def first_existing_column(metadata: dict[str, dict[str, Any]], candidates: list[str]) -> str | None:
+    for column in candidates:
+        if column in metadata:
+            return column
+    return None
+
+
+def default_value_for_required_column(table: str, column: str, data_type: str) -> Any:
+    if data_type == "uuid":
+        return deterministic_legacy_uuid(table, column)
+    if data_type in {"integer", "bigint", "smallint"}:
+        return 0
+    if data_type in {"numeric", "double precision", "real"}:
+        return 0
+    if data_type == "boolean":
+        return True
+    if "timestamp" in data_type:
+        return datetime.now().isoformat(timespec="seconds")
+    if data_type == "date":
+        return date.today().isoformat()
+    if data_type in {"json", "jsonb"}:
+        return None
+    return ""
+
+
+def get_planning_day_model(pg: Any) -> dict[str, Any] | None:
+    route_types = target_column_types(pg, "planning_routes")
+    if "planning_day_id" not in route_types:
+        return None
+
+    fk = foreign_key_target(pg, "planning_routes", "planning_day_id")
+    if fk:
+        day_table, id_column = fk
+    else:
+        day_table = next((table for table in PLANNING_DAY_TABLE_CANDIDATES if target_table_exists(pg, table)), "")
+        id_column = "id"
+    if not day_table:
+        raise RuntimeError("planning_routes requiere planning_day_id pero no se encontró tabla de jornadas.")
+
+    metadata = target_column_metadata(pg, day_table)
+    if id_column not in metadata:
+        id_column = "id"
+    date_column = first_existing_column(metadata, DATE_COLUMN_CANDIDATES)
+    if not date_column:
+        raise RuntimeError(f"No se encontró columna de fecha en {day_table}.")
+    division_column = first_existing_column(metadata, DIVISION_COLUMN_CANDIDATES)
+    return {
+        "table": day_table,
+        "id_column": id_column,
+        "date_column": date_column,
+        "division_column": division_column,
+        "metadata": metadata,
+    }
+
+
+def planning_day_uuid(planning_date: Any, division: Any = "") -> str | None:
+    clean_date = normalize_date_value(planning_date)
+    if not clean_date:
+        return None
+    div = normalize_division_value(division)
+    return deterministic_legacy_uuid("planning_days", f"{clean_date}:{div}")
+
+
+def sqlite_planning_day_keys(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    keys = {
+        (normalize_date_value(row.get("planning_date")) or "", normalize_division_value(row.get("division")))
+        for row in rows
+        if normalize_date_value(row.get("planning_date"))
+    }
+    return sorted(keys)
+
+
+def find_planning_day_id(pg: Any, model: dict[str, Any], planning_date: str, division: str) -> Any | None:
+    table = qident(model["table"])
+    id_column = qident(model["id_column"])
+    date_column = qident(model["date_column"])
+    division_column = qident(model["division_column"]) if model["division_column"] else None
+    if division_column:
+        with pg.cursor() as cur:
+            candidates = [division, short_division_value(division)]
+            for candidate in dict.fromkeys(candidates):
+                cur.execute(
+                    f"select {id_column} from {table} where {date_column}=%s and {division_column}=%s limit 1",
+                    (planning_date, candidate),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0]
+    else:
+        with pg.cursor() as cur:
+            cur.execute(f"select {id_column} from {table} where {date_column}=%s limit 1", (planning_date,))
+            row = cur.fetchone()
+            if row:
+                return row[0]
+    return None
+
+
+def insert_planning_day(pg: Any, model: dict[str, Any], planning_date: str, division: str) -> Any:
+    table = model["table"]
+    id_column = model["id_column"]
+    date_column = model["date_column"]
+    division_column = model["division_column"]
+    metadata = model["metadata"]
+    row: dict[str, Any] = {}
+
+    if metadata.get(id_column, {}).get("data_type") == "uuid":
+        row[id_column] = planning_day_uuid(planning_date, division)
+    row[date_column] = planning_date
+    if division_column:
+        row[division_column] = short_division_value(division)
+
+    for column, info in metadata.items():
+        if column in row:
+            continue
+        if info["is_nullable"] == "NO" and info["column_default"] is None:
+            row[column] = default_value_for_required_column(table, column, info["data_type"])
+
+    columns = list(row)
+    placeholders = ", ".join(["%s"] * len(columns))
+    quoted_columns = ", ".join(qident(column) for column in columns)
+    update_cols = [column for column in columns if column != id_column]
+    update_sql = ", ".join(f"{qident(column)}=excluded.{qident(column)}" for column in update_cols)
+    if id_column in row and update_sql:
+        sql = (
+            f"insert into {qident(table)} ({quoted_columns}) values ({placeholders}) "
+            f"on conflict ({qident(id_column)}) do update set {update_sql} "
+            f"returning {qident(id_column)}"
+        )
+    elif id_column in row:
+        sql = (
+            f"insert into {qident(table)} ({quoted_columns}) values ({placeholders}) "
+            f"on conflict ({qident(id_column)}) do nothing "
+            f"returning {qident(id_column)}"
+        )
+    else:
+        sql = f"insert into {qident(table)} ({quoted_columns}) values ({placeholders}) returning {qident(id_column)}"
+    with pg.cursor() as cur:
+        cur.execute(sql, tuple(row[column] for column in columns))
+        result = cur.fetchone()
+    return result[0] if result else find_planning_day_id(pg, model, planning_date, division)
+
+
+def ensure_planning_days(pg: Any, route_rows: list[dict[str, Any]]) -> dict[tuple[str, str], Any]:
+    model = get_planning_day_model(pg)
+    if not model:
+        return {}
+    day_map: dict[tuple[str, str], Any] = {}
+    for planning_date, division in sqlite_planning_day_keys(route_rows):
+        day_id = find_planning_day_id(pg, model, planning_date, division)
+        if day_id is None:
+            day_id = insert_planning_day(pg, model, planning_date, division)
+        day_map[(planning_date, division)] = day_id
+    return day_map
+
+
+def attach_planning_day_ids(rows: list[dict[str, Any]], day_map: dict[tuple[str, str], Any]) -> int:
+    unresolved = 0
+    if not day_map:
+        return 0
+    for row in rows:
+        planning_date = normalize_date_value(row.get("planning_date")) or ""
+        division = normalize_division_value(row.get("division"))
+        day_id = day_map.get((planning_date, division))
+        row["planning_day_id"] = day_id
+        if day_id is None:
+            unresolved += 1
+    return unresolved
+
+
+def report_planning_days_dry_run(pg: Any, route_rows: list[dict[str, Any]]) -> None:
+    model = get_planning_day_model(pg)
+    if not model:
+        print("Jornadas operativas: planning_routes no requiere planning_day_id.")
+        return
+    keys = sqlite_planning_day_keys(route_rows)
+    existing = 0
+    missing = 0
+    for planning_date, division in keys:
+        if find_planning_day_id(pg, model, planning_date, division) is None:
+            missing += 1
+        else:
+            existing += 1
+    unresolved_routes = sum(
+        1
+        for row in route_rows
+        if not normalize_date_value(row.get("planning_date")) or (normalize_date_value(row.get("planning_date")) or "", normalize_division_value(row.get("division"))) not in set(keys)
+    )
+    print(f"Jornadas operativas detectadas: {len(keys)}")
+    print(f"Jornadas ya existentes en Supabase: {existing}")
+    print(f"Jornadas a crear en migración real: {missing}")
+    print(f"Rutas sin planning_day_id resoluble: {unresolved_routes}")
 
 
 def report_uuid_compatibility(table: str, columns: list[str], rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
@@ -290,6 +553,8 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
     target_types = target_column_types(pg, table)
     target_cols = set(target_types)
     columns = [column for column in columns if column in target_cols]
+    extra_columns = sorted({column for row in rows for column in row if column in target_cols and column not in columns})
+    columns.extend(extra_columns)
     if not columns:
         return 0
     normalize_uuid_columns_for_target(table, rows, target_types)
@@ -383,6 +648,11 @@ def main() -> None:
     print("Filas SQLite detectadas:")
     for table, count in source_counts.items():
         print(f"- {table}: {count}")
+    route_rows = source_payload.get("planning_routes", ([], []))[1]
+    day_keys = sqlite_planning_day_keys(route_rows)
+    routes_without_day_key = sum(1 for row in route_rows if not normalize_date_value(row.get("planning_date")))
+    print(f"Jornadas SQLite detectadas: {len(day_keys)}")
+    print(f"Rutas SQLite sin fecha para resolver jornada: {routes_without_day_key}")
     if not args.include_auth:
         print("Tablas de usuarios/sesiones/auditoría omitidas para preservar usuarios actuales de Supabase.")
 
@@ -405,6 +675,7 @@ def main() -> None:
 
     if args.dry_run:
         with psycopg_module.connect(db_url) as pg:
+            report_planning_days_dry_run(pg, source_payload.get("planning_routes", ([], []))[1])
             for table in tables:
                 if not target_table_exists(pg, table):
                     print(f"Validación {table}: tabla ausente en Supabase.")
@@ -416,6 +687,10 @@ def main() -> None:
 
     with psycopg_module.connect(db_url) as pg:
         execute_schema(pg)
+        day_map = ensure_planning_days(pg, route_rows)
+        unresolved = attach_planning_day_ids(route_rows, day_map)
+        if unresolved:
+            raise RuntimeError(f"No se pudo resolver planning_day_id para {unresolved} rutas.")
         for table in tables:
             if not target_table_exists(pg, table):
                 print(f"Omitido {table}: no existe en Supabase.")
