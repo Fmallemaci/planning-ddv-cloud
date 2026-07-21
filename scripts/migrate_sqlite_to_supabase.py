@@ -49,6 +49,13 @@ TIMESTAMP_COLUMN_NAMES = {
 
 TEMPORAL_COLUMN_NAMES = DATE_COLUMN_NAMES | TIMESTAMP_COLUMN_NAMES
 
+JSON_COLUMN_NAMES = {
+    "previous_data",
+    "new_data",
+    "metadata",
+    "details",
+}
+
 
 def normalize_date_value(value: Any, timestamp: bool = False) -> str | None:
     if value is None:
@@ -106,11 +113,33 @@ def normalize_uuid_value(value: Any) -> str | None:
         return None
 
 
+def normalize_json_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        import json
+
+        return json.dumps(value, ensure_ascii=False, default=str)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        import json
+
+        json.loads(text)
+        return text
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
     clean = dict(row)
     for column in TEMPORAL_COLUMN_NAMES:
         if column in clean:
             clean[column] = normalize_date_value(clean[column], column in TIMESTAMP_COLUMN_NAMES)
+    for column in JSON_COLUMN_NAMES:
+        if column in clean:
+            clean[column] = normalize_json_value(clean[column])
     return clean
 
 

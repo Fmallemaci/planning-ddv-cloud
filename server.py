@@ -100,6 +100,13 @@ TIMESTAMP_COLUMN_NAMES = {
 
 TEMPORAL_COLUMN_NAMES = DATE_COLUMN_NAMES | TIMESTAMP_COLUMN_NAMES
 
+JSON_COLUMN_NAMES = {
+    "previous_data",
+    "new_data",
+    "metadata",
+    "details",
+}
+
 try:
     import bcrypt  # type: ignore
 except Exception:  # pragma: no cover - Render installs it from requirements.
@@ -275,6 +282,21 @@ def safe_audit_text(value: Any, fallback: str = "N/D") -> str:
     return text if text else fallback
 
 
+def normalize_json_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        json.loads(text)
+        return text
+    except (TypeError, ValueError):
+        return None
+
+
 def audit_entity_name(user: dict[str, Any] | None, record_type: str = "", record_id: str = "", new_data: Any = None) -> str:
     if isinstance(new_data, dict):
         for key in ("entity_name", "username", "display_name", "name"):
@@ -377,8 +399,8 @@ def register_audit_event(
             normalize_audit_division(con, division),
             str(record_type or ""),
             str(record_id or ""),
-            json.dumps(previous_data, ensure_ascii=False, default=str) if previous_data is not None else "",
-            json.dumps(new_data, ensure_ascii=False, default=str) if new_data is not None else "",
+            normalize_json_value(previous_data),
+            normalize_json_value(new_data),
             now_iso(),
             str(ip_address or ""),
         ]
@@ -606,6 +628,8 @@ def normalize_sql_params(sql: str, params: Any = None) -> Any:
         clean_column = _clean_column_name(column)
         if clean_column in TEMPORAL_COLUMN_NAMES:
             normalized.append(normalize_date_value(value, clean_column in TIMESTAMP_COLUMN_NAMES))
+        elif clean_column in JSON_COLUMN_NAMES:
+            normalized.append(normalize_json_value(value))
         else:
             normalized.append(value)
     return tuple(normalized)
