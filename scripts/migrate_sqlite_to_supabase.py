@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sqlite3
 from pathlib import Path
+from datetime import date, datetime
 from typing import Any
 
 psycopg = None
@@ -25,6 +27,80 @@ TABLES = [
     "user_sessions",
     "audit_log",
 ]
+
+DATE_COLUMN_NAMES = {
+    "planning_date",
+    "novelty_date",
+    "recarga_date",
+    "period_start",
+    "period_end",
+    "mail_date",
+    "operational_date",
+}
+
+TIMESTAMP_COLUMN_NAMES = {
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "last_activity",
+    "last_login",
+}
+
+TEMPORAL_COLUMN_NAMES = DATE_COLUMN_NAMES | TIMESTAMP_COLUMN_NAMES
+
+
+def normalize_date_value(value: Any, timestamp: bool = False) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds") if timestamp else value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1])
+    candidates.append(text.replace("/", "-"))
+    if " " in text:
+        candidates.append(text.replace(" ", "T", 1))
+
+    for candidate in candidates:
+        clean = candidate.strip()
+        if not clean:
+            continue
+        try:
+            parsed_dt = datetime.fromisoformat(clean)
+            return parsed_dt.isoformat(timespec="seconds") if timestamp else parsed_dt.date().isoformat()
+        except ValueError:
+            pass
+        try:
+            parsed_date = date.fromisoformat(clean[:10])
+            return parsed_date.isoformat()
+        except ValueError:
+            pass
+
+    day_first = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\D.*)?$", text)
+    if day_first:
+        day, month, year = map(int, day_first.groups())
+        try:
+            parsed_date = date(year, month, day)
+            return parsed_date.isoformat()
+        except ValueError:
+            return None
+
+    return None
+
+
+def normalize_row(row: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(row)
+    for column in TEMPORAL_COLUMN_NAMES:
+        if column in clean:
+            clean[column] = normalize_date_value(clean[column], column in TIMESTAMP_COLUMN_NAMES)
+    return clean
 
 
 def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -50,6 +126,7 @@ def execute_schema(pg: Any) -> None:
 def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
+    rows = [normalize_row(row) for row in rows]
     col_sql = ", ".join(columns)
     placeholders = ", ".join(["%s"] * len(columns))
     update_cols = [col for col in columns if col != "id"]

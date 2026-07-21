@@ -80,6 +80,26 @@ STORAGE_TABLES = [
     "audit_log",
 ]
 
+DATE_COLUMN_NAMES = {
+    "planning_date",
+    "novelty_date",
+    "recarga_date",
+    "period_start",
+    "period_end",
+    "mail_date",
+    "operational_date",
+}
+
+TIMESTAMP_COLUMN_NAMES = {
+    "created_at",
+    "updated_at",
+    "expires_at",
+    "last_activity",
+    "last_login",
+}
+
+TEMPORAL_COLUMN_NAMES = DATE_COLUMN_NAMES | TIMESTAMP_COLUMN_NAMES
+
 try:
     import bcrypt  # type: ignore
 except Exception:  # pragma: no cover - Render installs it from requirements.
@@ -383,13 +403,136 @@ def translate_sqlite_to_postgres(sql: str) -> str:
     return translated.replace("?", "%s")
 
 
+def normalize_date_value(value: Any, timestamp: bool = False) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds") if timestamp else value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1])
+    candidates.append(text.replace("/", "-"))
+    if " " in text:
+        candidates.append(text.replace(" ", "T", 1))
+
+    for candidate in candidates:
+        clean = candidate.strip()
+        if not clean:
+            continue
+        try:
+            parsed_dt = datetime.fromisoformat(clean)
+            return parsed_dt.isoformat(timespec="seconds") if timestamp else parsed_dt.date().isoformat()
+        except ValueError:
+            pass
+        try:
+            parsed_date = date.fromisoformat(clean[:10])
+            return parsed_date.isoformat()
+        except ValueError:
+            pass
+
+    day_first = re.match(r"^(\d{1,2})[-/](\d{1,2})[-/](\d{4})(?:\D.*)?$", text)
+    if day_first:
+        day, month, year = map(int, day_first.groups())
+        try:
+            parsed_date = date(year, month, day)
+            return parsed_date.isoformat()
+        except ValueError:
+            return None
+
+    return None
+
+
+def _clean_column_name(column: str) -> str:
+    return column.strip().strip('"').split(".")[-1].lower()
+
+
+def _split_sql_columns(columns_sql: str) -> list[str]:
+    return [_clean_column_name(part) for part in columns_sql.split(",") if part.strip()]
+
+
+def _param_columns_from_insert(sql: str) -> list[str]:
+    match = re.search(r"\bINSERT\s+INTO\s+\w+\s*\(([^)]+)\)\s+VALUES\s*\(([^)]*)\)", sql, flags=re.I | re.S)
+    if not match:
+        return []
+    columns = _split_sql_columns(match.group(1))
+    placeholders = match.group(2).count("?")
+    return columns[:placeholders]
+
+
+def _param_columns_from_update(sql: str) -> list[str]:
+    match = re.search(r"\bUPDATE\s+\w+\s+SET\s+(.+?)(?:\s+WHERE\s+(.+))?$", sql, flags=re.I | re.S)
+    if not match:
+        return []
+    columns: list[str] = []
+    set_sql = match.group(1)
+    for assignment in set_sql.split(","):
+        if "?" not in assignment:
+            continue
+        left = assignment.split("=", 1)[0]
+        columns.append(_clean_column_name(left))
+    columns.extend(_param_columns_from_where(match.group(2) or ""))
+    return columns
+
+
+def _param_columns_from_where(where_sql: str) -> list[str]:
+    columns: list[str] = []
+    for match in re.finditer(r"([A-Za-z_][\w.]*)\s+BETWEEN\s+\?\s+AND\s+\?", where_sql, flags=re.I):
+        col = _clean_column_name(match.group(1))
+        columns.extend([col, col])
+    masked = re.sub(r"([A-Za-z_][\w.]*)\s+BETWEEN\s+\?\s+AND\s+\?", "", where_sql, flags=re.I)
+    for match in re.finditer(r"([A-Za-z_][\w.]*)\s*(?:=|<>|!=|<=|>=|<|>|LIKE)\s*\?", masked, flags=re.I):
+        columns.append(_clean_column_name(match.group(1)))
+    return columns
+
+
+def infer_sql_param_columns(sql: str) -> list[str]:
+    compact = " ".join(sql.strip().split())
+    if re.match(r"^INSERT\s+INTO\b", compact, flags=re.I):
+        return _param_columns_from_insert(compact)
+    if re.match(r"^UPDATE\b", compact, flags=re.I):
+        return _param_columns_from_update(compact)
+    where_match = re.search(r"\bWHERE\s+(.+)$", compact, flags=re.I | re.S)
+    return _param_columns_from_where(where_match.group(1) if where_match else compact)
+
+
+def normalize_sql_params(sql: str, params: Any = None) -> Any:
+    if params is None:
+        return None
+    if isinstance(params, dict) or isinstance(params, (str, bytes)):
+        return params
+    try:
+        values = list(params)
+    except TypeError:
+        return params
+
+    columns = infer_sql_param_columns(sql)
+    if len(columns) < len(values):
+        columns.extend([""] * (len(values) - len(columns)))
+
+    normalized = []
+    for column, value in zip(columns, values):
+        clean_column = _clean_column_name(column)
+        if clean_column in TEMPORAL_COLUMN_NAMES:
+            normalized.append(normalize_date_value(value, clean_column in TIMESTAMP_COLUMN_NAMES))
+        else:
+            normalized.append(value)
+    return tuple(normalized)
+
+
 class PgConnectionCompat:
     def __init__(self, connection: Any):
         self.connection = connection
 
     def execute(self, sql: str, params: Any = None) -> PgCursorCompat:
         cursor = self.connection.cursor()
-        cursor.execute(translate_sqlite_to_postgres(sql), params or ())
+        cursor.execute(translate_sqlite_to_postgres(sql), normalize_sql_params(sql, params) or ())
         return PgCursorCompat(cursor)
 
     def executescript(self, script: str) -> None:
