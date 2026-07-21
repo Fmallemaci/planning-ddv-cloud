@@ -1138,22 +1138,50 @@ def print_prepared_summary(
     print(f"ALVAREZ JOSE -> employees.full_name: {'OK' if alvarez and str(alvarez.get('full_name') or '').strip() else 'ERROR'}")
 
 
-def execute_prepared_rows_with_savepoints(pg: Any, prepared: dict[str, list[dict[str, Any]]]) -> list[str]:
-    errors: list[str] = []
+def set_preflight_timeouts(pg: Any) -> None:
     with pg.cursor() as cur:
-        for table in OPERATIONAL_TABLES:
-            rows = prepared.get(table, [])
-            for index, row in enumerate(rows, start=1):
-                savepoint = f"sp_{table}_{index}"
+        cur.execute("SET LOCAL statement_timeout = '30s'")
+        cur.execute("SET LOCAL lock_timeout = '10s'")
+
+
+def rollback_with_message(pg: Any) -> None:
+    try:
+        pg.rollback()
+        print("Rollback completado.")
+    except Exception as exc:
+        print(f"Rollback fallido: {type(exc).__name__}: {exc}")
+
+
+def execute_prepared_rows_with_table_savepoints(pg: Any, prepared: dict[str, list[dict[str, Any]]]) -> list[str]:
+    errors: list[str] = []
+    set_preflight_timeouts(pg)
+    for table in OPERATIONAL_TABLES:
+        rows = prepared.get(table, [])
+        print(f"INICIO tabla {table} filas={len(rows)}", flush=True)
+        savepoint = f"sp_table_{table}"
+        try:
+            with pg.cursor() as cur:
                 cur.execute(f"savepoint {savepoint}")
-                try:
-                    upsert_prepared_row(pg, table, row)
-                except Exception as exc:
-                    legacy_id = row.get("id", "N/D")
-                    errors.append(f"{table} fila {index} id={legacy_id}: {type(exc).__name__}: {exc}")
+
+            for row in rows:
+                upsert_prepared_row(pg, table, row)
+
+            with pg.cursor() as cur:
+                cur.execute(f"release savepoint {savepoint}")
+            print(f"FIN tabla {table} filas={len(rows)}", flush=True)
+        except Exception as exc:
+            message = f"{table}: {type(exc).__name__}: {exc}; filas={len(rows)}"
+            print(f"ERROR tabla {message}", flush=True)
+            errors.append(message)
+            try:
+                with pg.cursor() as cur:
                     cur.execute(f"rollback to savepoint {savepoint}")
-                finally:
-                    cur.execute(f"release savepoint {savepoint}")
+            except Exception as rollback_exc:
+                errors.append(
+                    f"{table}: no se pudo volver al savepoint tras el error: "
+                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                )
+                break
     return errors
 
 
@@ -1237,6 +1265,7 @@ def main() -> None:
     if args.preflight_real:
         with psycopg_module.connect(db_url) as pg:
             try:
+                set_preflight_timeouts(pg)
                 print_check_constraints_report(pg, ["dias_operativos", *tables])
                 day_map = ensure_planning_days(pg, route_rows)
                 dia_operativo_map = ensure_dias_operativos(pg, route_rows)
@@ -1251,18 +1280,28 @@ def main() -> None:
                     print("Errores de preflight:")
                     for error in validation_errors:
                         print(f"- {error}")
-                    pg.rollback()
+                    print("Preflight falló en preparación.")
+                    rollback_with_message(pg)
                     raise SystemExit(1)
-                db_errors = execute_prepared_rows_with_savepoints(pg, prepared)
-                pg.rollback()
+                db_errors = execute_prepared_rows_with_table_savepoints(pg, prepared)
                 if db_errors:
                     print("Errores de constraints/tipos en preflight-real:")
                     for error in db_errors:
                         print(f"- {error}")
+                    failed_table = db_errors[0].split(":", 1)[0] if db_errors else "N/D"
+                    print(f"Preflight falló en tabla {failed_table}.")
+                    rollback_with_message(pg)
                     raise SystemExit(1)
-                print("preflight-real OK: 0 errores NOT NULL, UUID, boolean, date/json y FK. ROLLBACK ejecutado.")
+                print("Preflight real OK")
+                print("0 errores")
+                rollback_with_message(pg)
+            except KeyboardInterrupt:
+                print("Preflight cancelado por el usuario.")
+                rollback_with_message(pg)
+                raise SystemExit(130)
             except Exception:
-                pg.rollback()
+                print("Preflight falló por error inesperado.")
+                rollback_with_message(pg)
                 raise
         return
 
