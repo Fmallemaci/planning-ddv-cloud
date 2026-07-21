@@ -129,6 +129,35 @@ def canonical(value: Any) -> str:
     return text
 
 
+def route_division_for_db(value: Any) -> str:
+    div = canonical(value)
+    if div in {"TW", "TRELEW"}:
+        return "TW" if postgres_enabled() else "TRELEW"
+    if div in {"PM", "PUERTO MADRYN", "PUERTO_MADRYN"}:
+        return "PM" if postgres_enabled() else "PUERTO MADRYN"
+    return div
+
+
+def display_division(value: Any) -> str:
+    div = canonical(value)
+    if div in {"TW", "TRELEW"}:
+        return "TRELEW"
+    if div in {"PM", "PUERTO MADRYN", "PUERTO_MADRYN"}:
+        return "PUERTO MADRYN"
+    return div
+
+
+def normalize_route_output(row: dict[str, Any]) -> dict[str, Any]:
+    output = dict(row)
+    if "planning_date" in output:
+        output["planning_date"] = normalize_date_value(output.get("planning_date")) or str(output.get("planning_date") or "")
+    if "division" in output:
+        output["division"] = display_division(output.get("division"))
+    if "id" in output:
+        output["id"] = str(output.get("id"))
+    return output
+
+
 def safe_number(value: Any) -> float:
     if value in (None, ""):
         return 0.0
@@ -1097,7 +1126,7 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
                 "SELECT id,domain,domain_seq FROM planning_routes WHERE planning_date=? AND division=? AND source='CHESS'",
                 (planning_date, division),
             ).fetchall()
-            obsolete = [int(r["id"]) for r in existing if (r["domain"], int(r["domain_seq"])) not in incoming]
+            obsolete = [str(r["id"]) for r in existing if (r["domain"], int(r["domain_seq"])) not in incoming]
             for route_id in obsolete:
                 con.execute("DELETE FROM planning_routes WHERE id=?", (route_id,))
             removed += len(obsolete)
@@ -1141,21 +1170,25 @@ def route_rows(planning_date: str, division: str = "") -> list[dict[str, Any]]:
     query = """
         SELECT pr.*, COALESCE(l.sort_order,999) locality_order
         FROM planning_routes pr
-        LEFT JOIN localities l ON l.name=pr.locality AND l.division=pr.division
+        LEFT JOIN localities l ON l.name=pr.locality
+         AND l.division=CASE pr.division WHEN 'TW' THEN 'TRELEW' WHEN 'PM' THEN 'PUERTO MADRYN' ELSE pr.division END
         WHERE pr.planning_date=?
     """
     params: list[Any] = [planning_date]
     if division and division != "TODAS":
         query += " AND pr.division=?"
-        params.append(division)
-    query += " ORDER BY CASE pr.division WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+        params.append(route_division_for_db(division))
+    query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
     with db() as con:
-        return [dict(r) for r in con.execute(query, params).fetchall()]
+        return [normalize_route_output(dict(r)) for r in con.execute(query, params).fetchall()]
 
 
 def dates_list() -> list[str]:
     with db() as con:
-        return [r[0] for r in con.execute("SELECT DISTINCT planning_date FROM planning_routes ORDER BY planning_date DESC").fetchall()]
+        return [
+            normalize_date_value(r[0]) or str(r[0] or "")
+            for r in con.execute("SELECT DISTINCT planning_date FROM planning_routes ORDER BY planning_date DESC").fetchall()
+        ]
 
 
 def master_payload() -> dict[str, Any]:
@@ -1315,10 +1348,10 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
     # Validar la fecha completa, aun cuando se guarde solo TW o PM. Así se conserva
     # la regla de que una persona mantenga el mismo tipo de función durante el día.
     current = route_rows(planning_date)
-    incoming = {int(r["id"]): r for r in routes}
+    incoming = {str(r.get("id") or "").strip(): r for r in routes}
     merged: list[dict[str, Any]] = []
     for row in current:
-        replacement = incoming.get(int(row["id"]))
+        replacement = incoming.get(str(row.get("id") or "").strip())
         if replacement:
             updated = dict(row)
             for field in ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms"):
@@ -1330,7 +1363,7 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
     errors = validate_assignments(planning_date, merged, confirm=False)
     if confirm:
         selected_ids = set(incoming)
-        selected_rows = [r for r in merged if int(r["id"]) in selected_ids]
+        selected_rows = [r for r in merged if str(r.get("id") or "").strip() in selected_ids]
         errors.extend(validate_assignments(planning_date, selected_rows, confirm=True))
     errors = list(dict.fromkeys(errors))
     if errors:
@@ -1339,14 +1372,16 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
     allowed_division = canonical(division)
     with db() as con:
         for route in routes:
-            route_id = int(route["id"])
+            route_id = str(route.get("id") or "").strip()
+            if not route_id:
+                continue
             existing = con.execute(
                 "SELECT division FROM planning_routes WHERE id=? AND planning_date=?",
                 (route_id, planning_date),
             ).fetchone()
             if not existing:
                 continue
-            if allowed_division not in ("", "TODAS") and canonical(existing["division"]) != allowed_division:
+            if allowed_division not in ("", "TODAS") and display_division(existing["division"]) != display_division(allowed_division):
                 continue
             con.execute(
                 """
@@ -1491,34 +1526,66 @@ def recarga_rows(start_date: str, end_date: str, division: str = "") -> dict[str
         raise ValueError("La fecha Desde no puede ser posterior a la fecha Hasta.")
 
     params: list[Any] = [start.isoformat(), end.isoformat()]
-    division_sql = ""
-    if division and division != "TODAS":
-        division_sql = " AND pr.division=?"
-        params.append(division)
+    if postgres_enabled():
+        division_sql = ""
+        if division and division != "TODAS":
+            division_sql = " AND d.base IN (?,?)"
+            params.extend([display_division(division), route_division_for_db(division)])
 
-    detail_query = f"""
-        SELECT r.recarga_date,r.employee_name,r.role,pr.division,pr.domain,
-               pr.locality,r.quantity
-        FROM recargas r
-        JOIN planning_routes pr ON pr.id=r.route_id
-        WHERE r.recarga_date BETWEEN ? AND ? {division_sql}
-        ORDER BY r.recarga_date DESC,pr.division,r.employee_name,pr.domain
-    """
-    summary_query = f"""
-        SELECT r.employee_name,
-               GROUP_CONCAT(DISTINCT r.role) roles,
-               pr.division,
-               SUM(r.quantity) recargas,
-               COUNT(DISTINCT r.recarga_date) dias_con_recarga
-        FROM recargas r
-        JOIN planning_routes pr ON pr.id=r.route_id
-        WHERE r.recarga_date BETWEEN ? AND ? {division_sql}
-        GROUP BY r.employee_name,pr.division
-        ORDER BY recargas DESC,r.employee_name
-    """
+        detail_query = f"""
+            SELECT COALESCE(NULLIF(r.recarga_date::text,''), d.fecha::text) recarga_date,
+                   r.employee_name,r.role,d.base division,'' domain,'' locality,r.quantity
+            FROM recargas r
+            JOIN dias_operativos d ON d.id=r.dia_operativo_id
+            WHERE COALESCE(NULLIF(r.recarga_date::text,''), d.fecha::text) BETWEEN ? AND ? {division_sql}
+            ORDER BY recarga_date DESC,d.base,r.employee_name
+        """
+        summary_query = f"""
+            SELECT r.employee_name,
+                   GROUP_CONCAT(DISTINCT r.role) roles,
+                   d.base division,
+                   SUM(r.quantity) recargas,
+                   COUNT(DISTINCT COALESCE(NULLIF(r.recarga_date::text,''), d.fecha::text)) dias_con_recarga
+            FROM recargas r
+            JOIN dias_operativos d ON d.id=r.dia_operativo_id
+            WHERE COALESCE(NULLIF(r.recarga_date::text,''), d.fecha::text) BETWEEN ? AND ? {division_sql}
+            GROUP BY r.employee_name,d.base
+            ORDER BY recargas DESC,r.employee_name
+        """
+    else:
+        division_sql = ""
+        if division and division != "TODAS":
+            division_sql = " AND pr.division=?"
+            params.append(division)
+
+        detail_query = f"""
+            SELECT r.recarga_date,r.employee_name,r.role,pr.division,pr.domain,
+                   pr.locality,r.quantity
+            FROM recargas r
+            JOIN planning_routes pr ON pr.id=r.route_id
+            WHERE r.recarga_date BETWEEN ? AND ? {division_sql}
+            ORDER BY r.recarga_date DESC,pr.division,r.employee_name,pr.domain
+        """
+        summary_query = f"""
+            SELECT r.employee_name,
+                   GROUP_CONCAT(DISTINCT r.role) roles,
+                   pr.division,
+                   SUM(r.quantity) recargas,
+                   COUNT(DISTINCT r.recarga_date) dias_con_recarga
+            FROM recargas r
+            JOIN planning_routes pr ON pr.id=r.route_id
+            WHERE r.recarga_date BETWEEN ? AND ? {division_sql}
+            GROUP BY r.employee_name,pr.division
+            ORDER BY recargas DESC,r.employee_name
+        """
     with db() as con:
         detail = [dict(r) for r in con.execute(detail_query, params).fetchall()]
         summary = [dict(r) for r in con.execute(summary_query, params).fetchall()]
+    for row in detail:
+        row["recarga_date"] = normalize_date_value(row.get("recarga_date")) or str(row.get("recarga_date") or "")
+        row["division"] = display_division(row.get("division"))
+    for row in summary:
+        row["division"] = display_division(row.get("division"))
 
     reference_start, reference_end, period_label = recarga_period(start)
     same_period = start.isoformat() == reference_start and end.isoformat() == reference_end
@@ -1658,7 +1725,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     """
     qparams: list[Any] = [start, end]
     if division and division != "TODAS":
-        query += " AND division=?"; qparams.append(division)
+        query += " AND division=?"; qparams.append(route_division_for_db(division))
     if locality:
         query += " AND UPPER(TRIM(locality)) LIKE ?"; qparams.append(f"%{locality}%")
     if employee:
@@ -1672,7 +1739,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
         nov_query += " AND employee_name=?"; nov_params.append(employee)
     nov_query += " ORDER BY novelty_date DESC,employee_name LIMIT 5000"
     with db() as con:
-        routes = [dict(r) for r in con.execute(query, qparams).fetchall()]
+        routes = [normalize_route_output(dict(r)) for r in con.execute(query, qparams).fetchall()]
         novelties = [dict(r) for r in con.execute(nov_query, nov_params).fetchall()]
     grouped: dict[tuple[str, str], dict[str, float]] = {}
     capacities = {"TRELEW": 6, "PUERTO MADRYN": 5}
@@ -1793,7 +1860,7 @@ def save_whatsapp_observations(planning_date: str, rows: list[dict[str, Any]]) -
         raise ValueError("Debe seleccionar una fecha.")
     with db() as con:
         for row in rows:
-            route_id = int(row.get("id") or 0)
+            route_id = str(row.get("id") or "").strip()
             if not route_id:
                 continue
             con.execute(
