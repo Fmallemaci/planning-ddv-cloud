@@ -3380,6 +3380,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(raw)))
                     self.end_headers()
                     self.wfile.write(raw)
+                elif path == "/api/mail/capabilities":
+                    self.send_json({
+                        "direct_outlook": platform.system() == "Windows",
+                        "server_platform": platform.system(),
+                    })
                 elif path == "/api/mail/preview":
                     body = report_html(query.get("date", ""), query.get("division", "TODAS"), logo_src="/assets/ddv_logo.png", include_novelties=True)
                     self.send_response(200)
@@ -3485,6 +3490,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
+            elif path == "/api/mail/capabilities":
+                self.send_json({
+                    "direct_outlook": platform.system() == "Windows",
+                    "server_platform": platform.system(),
+                })
             elif path == "/api/mail/preview":
                 body = report_html(query.get("date", ""), query.get("division", "TODAS"), logo_src="/assets/ddv_logo.png", include_novelties=True)
                 self.send_response(200)
