@@ -14,6 +14,7 @@ psycopg = None
 APP_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SQLITE = APP_DIR / "data" / "operations_ddv.db"
 SCHEMA_SQL = APP_DIR / "sql" / "supabase_schema.sql"
+LEGACY_UUID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "planning-ddv-cloud/sqlite-migration")
 
 OPERATIONAL_TABLES = [
     "planning_routes",
@@ -130,6 +131,13 @@ def normalize_uuid_value(value: Any) -> str | None:
         return None
 
 
+def deterministic_legacy_uuid(table: str, legacy_id: Any) -> str | None:
+    text = str(legacy_id or "").strip()
+    if not text:
+        return None
+    return str(uuid.uuid5(LEGACY_UUID_NAMESPACE, f"{table}:{text}"))
+
+
 def normalize_json_value(value: Any) -> str | None:
     if value is None:
         return None
@@ -204,6 +212,19 @@ def target_columns(pg: Any, table: str) -> set[str]:
         return {str(row[0]) for row in cur.fetchall()}
 
 
+def target_column_types(pg: Any, table: str) -> dict[str, str]:
+    with pg.cursor() as cur:
+        cur.execute(
+            """
+            select column_name, data_type
+            from information_schema.columns
+            where table_schema='public' and table_name=%s
+            """,
+            (table,),
+        )
+        return {str(row[0]): str(row[1]) for row in cur.fetchall()}
+
+
 def target_table_exists(pg: Any, table: str) -> bool:
     with pg.cursor() as cur:
         cur.execute(
@@ -215,6 +236,32 @@ def target_table_exists(pg: Any, table: str) -> bool:
             (table,),
         )
         return cur.fetchone() is not None
+
+
+def normalize_uuid_columns_for_target(table: str, rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
+    for row in rows:
+        for column, data_type in target_types.items():
+            if data_type != "uuid" or column not in row:
+                continue
+            if column == "id":
+                row[column] = normalize_uuid_value(row.get(column)) or deterministic_legacy_uuid(table, row.get(column))
+            elif table == "recargas" and column == "route_id":
+                row[column] = normalize_uuid_value(row.get(column)) or deterministic_legacy_uuid("planning_routes", row.get(column))
+            else:
+                row[column] = normalize_uuid_value(row.get(column))
+
+
+def report_uuid_compatibility(table: str, columns: list[str], rows: list[dict[str, Any]], target_types: dict[str, str]) -> None:
+    uuid_columns = [column for column in columns if target_types.get(column) == "uuid"]
+    if not uuid_columns:
+        return
+    print(f"Compatibilidad UUID {table}: {', '.join(uuid_columns)}")
+    for column in uuid_columns:
+        invalid = sum(1 for row in rows if row.get(column) not in (None, "") and normalize_uuid_value(row.get(column)) is None)
+        if invalid:
+            print(f"  - {column}: {invalid} valores legacy se convertirán a UUID determinístico o NULL según corresponda.")
+        else:
+            print(f"  - {column}: compatible.")
 
 
 def sqlite_rows(path: Path, table: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -240,10 +287,12 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
     if not rows:
         return 0
     rows = [normalize_row(row) for row in rows]
-    target_cols = target_columns(pg, table)
+    target_types = target_column_types(pg, table)
+    target_cols = set(target_types)
     columns = [column for column in columns if column in target_cols]
     if not columns:
         return 0
+    normalize_uuid_columns_for_target(table, rows, target_types)
     if table in {"audit_log", "user_sessions"} and "user_id" in columns:
         for row in rows:
             row["user_id"] = normalize_uuid_value(row.get("user_id"))
@@ -337,19 +386,33 @@ def main() -> None:
     if not args.include_auth:
         print("Tablas de usuarios/sesiones/auditoría omitidas para preservar usuarios actuales de Supabase.")
 
-    if args.dry_run:
-        return
-
     try:
         import psycopg as psycopg_module
     except Exception as exc:  # pragma: no cover
+        if args.dry_run:
+            print("Validación PostgreSQL omitida: falta instalar psycopg.")
+            return
         raise SystemExit("Falta instalar psycopg. Ejecutar: pip install -r requirements.txt") from exc
 
     db_url = (os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or "").strip()
     if not db_url:
+        if args.dry_run:
+            print("Validación PostgreSQL omitida: falta SUPABASE_DB_URL o DATABASE_URL.")
+            return
         raise SystemExit("Falta SUPABASE_DB_URL o DATABASE_URL para conectar PostgreSQL.")
     if not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SECRET_KEY"):
         print("Aviso: SUPABASE_URL o SUPABASE_SECRET_KEY no están configuradas. La migración usa SUPABASE_DB_URL.")
+
+    if args.dry_run:
+        with psycopg_module.connect(db_url) as pg:
+            for table in tables:
+                if not target_table_exists(pg, table):
+                    print(f"Validación {table}: tabla ausente en Supabase.")
+                    continue
+                columns, rows = source_payload[table]
+                report_uuid_compatibility(table, columns, rows, target_column_types(pg, table))
+                print(f"Validación {table}: destino actual {count_pg(pg, table)} filas.")
+        return
 
     with psycopg_module.connect(db_url) as pg:
         execute_schema(pg)
