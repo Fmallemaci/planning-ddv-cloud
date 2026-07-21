@@ -378,7 +378,7 @@ function applyUserRestrictions(){
 function showLogin(message=''){
   q('loginScreen').classList.remove('hidden');
   document.querySelector('.app').classList.add('auth-pending');
-  if(message)q('loginMessage').innerHTML=statusBox(message,'warn');
+  q('loginMessage').innerHTML=message?statusBox(message,'warn'):'';
 }
 function hideLogin(){
   q('loginScreen').classList.add('hidden');
@@ -405,6 +405,23 @@ function esc(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&l
 function fmt(v,d=0){const n=Number(v||0);return n.toLocaleString('es-AR',{minimumFractionDigits:d,maximumFractionDigits:d})}
 function statusBox(text,type='info'){return `<div class="status ${type}">${esc(text)}</div>`}
 async function api(url,options={}){const r=await fetch(url,{cache:'no-store',credentials:'include',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const type=r.headers.get('content-type')||'';const data=type.includes('application/json')?await r.json():await r.text();if(!r.ok){if(r.status===401)showLogin('Debe iniciar sesión.');throw new Error(data.error||data||`Error ${r.status}`)}return data}
+function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+async function fetchJson(url,options={}){
+  const r=await fetch(url,{cache:'no-store',credentials:'include',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});
+  const type=r.headers.get('content-type')||'';
+  const data=type.includes('application/json')?await r.json():await r.text();
+  return {ok:r.ok,status:r.status,data};
+}
+async function fetchJsonWithStartupRetry(url,options={}){
+  const waits=[1000,2000,4000,6000];
+  let lastError=null;
+  for(const ms of waits){
+    await wait(ms);
+    try{return await fetchJson(url,options)}
+    catch(e){lastError=e}
+  }
+  throw lastError||new Error('No se pudo conectar con el servidor.');
+}
 async function fileBase64(input){const f=input.files[0];if(!f)return null;return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(f)})}
 function showPage(name){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));q(`page-${name}`).classList.add('active');document.querySelectorAll('.nav button[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===name));q('pageTitle').textContent=pageInfo[name][0];q('pageSubtitle').textContent=pageInfo[name][1];if(name==='dashboard')loadDashboard();if(name==='planning')loadPlanning();if(name==='daily')loadDaily();if(name==='whatsapp')loadWhatsapp();if(name==='novelties')loadNovelties();if(name==='recargas')loadRecargas();if(name==='kms')loadKms();if(name==='history')loadHistory();if(name==='mail')loadMailPreview();if(name==='config')loadMasters()}
 document.querySelectorAll('.nav button[data-page]').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
@@ -613,7 +630,21 @@ async function resetPassword(id){const password=prompt('Contraseña provisoria n
 async function loadAudit(){const params=new URLSearchParams({start:q('auditStart').value,end:q('auditEnd').value,username:q('auditUser').value,module:q('auditModule').value,division:q('auditDivision').value,action:q('auditAction').value});const data=await api('/api/audit?'+params);q('auditTable').innerHTML=tableHtml(['Fecha y hora','Usuario','Acción','Módulo','División','Fecha operativa','Registro'],(data.rows||[]).map(r=>[esc(r.created_at),esc(r.username),esc(r.action),esc(r.module),esc(r.division),esc(r.operational_date),esc(`${r.record_type||''} ${r.record_id||''}`)]))}
 function closeModal(){q('modalBack').classList.remove('show')}
 async function initAppData(){const today=new Date().toISOString().slice(0,10);q('planningDate').value=today;const [rStart,rEnd]=period2625(today);q('recargaStart').value=rStart;q('recargaEnd').value=rEnd;q('kmsStart').value=today.slice(0,8)+'01';q('kmsEnd').value=today;q('historyStart').value=today.slice(0,8)+'01';q('historyEnd').value=today;await refreshDates();if(state.dates.length){q('planningDate').value=state.dates[0];const [s,e]=period2625(state.dates[0]);q('recargaStart').value=s;q('recargaEnd').value=e;q('kmsStart').value=state.dates[0].slice(0,8)+'01';q('kmsEnd').value=state.dates[0]}await syncHistoryLocalities();await loadDashboard();applyUserRestrictions()}
-async function bootstrap(){try{const r=await fetch('/api/auth/me',{cache:'no-store',credentials:'include'});const me=await r.json();if(r.ok&&me.authenticated){state.currentUser=me.user;renderSession();hideLogin();await initAppData()}else{showLogin(me.setup_required?'No hay administrador inicial. Configurar variables de entorno en Render.':'')}}catch(e){showLogin('No se pudo conectar con el servidor. Revisar que Render haya iniciado correctamente.')}}
+async function bootstrap(){
+  showLogin('Iniciando servidor, espere unos segundos...');
+  try{
+    await fetchJsonWithStartupRetry('/api/health');
+    const auth=await fetchJsonWithStartupRetry('/api/auth/me');
+    const me=auth.data||{};
+    if(auth.ok&&me.authenticated){
+      state.currentUser=me.user;renderSession();hideLogin();await initAppData();
+    }else{
+      showLogin(me.setup_required?'No hay administrador inicial. Configurar variables de entorno en Render.':'');
+    }
+  }catch(e){
+    showLogin('No se pudo conectar con el servidor. Revisar que Render haya iniciado correctamente.');
+  }
+}
 bootstrap();
 </script>
 </body>

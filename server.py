@@ -158,6 +158,25 @@ def normalize_route_output(row: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
+PG_ROUTE_EFFECTIVE_DATE = "COALESCE(NULLIF(pr.planning_date::text, '')::date, d.fecha)"
+PG_ROUTE_EFFECTIVE_DIVISION = """
+CASE
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('TW', 'TRELEW') THEN 'TW'
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('PM', 'PUERTO MADRYN', 'PUERTO_MADRYN') THEN 'PM'
+    WHEN UPPER(TRIM(COALESCE(d.base, ''))) = 'TRELEW' THEN 'TW'
+    WHEN UPPER(TRIM(COALESCE(d.base, ''))) IN ('PM', 'PUERTO MADRYN', 'PUERTO_MADRYN') THEN 'PM'
+    ELSE UPPER(TRIM(COALESCE(pr.division, d.base, '')))
+END
+"""
+PG_ROUTE_LOCALITY_DIVISION = f"""
+CASE
+    WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 'TRELEW'
+    WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 'PUERTO MADRYN'
+    ELSE ({PG_ROUTE_EFFECTIVE_DIVISION})
+END
+"""
+
+
 def safe_number(value: Any) -> float:
     if value in (None, ""):
         return 0.0
@@ -1167,24 +1186,50 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def route_rows(planning_date: str, division: str = "") -> list[dict[str, Any]]:
-    query = """
-        SELECT pr.*, COALESCE(l.sort_order,999) locality_order
-        FROM planning_routes pr
-        LEFT JOIN localities l ON l.name=pr.locality
-         AND l.division=CASE pr.division WHEN 'TW' THEN 'TRELEW' WHEN 'PM' THEN 'PUERTO MADRYN' ELSE pr.division END
-        WHERE pr.planning_date=?
-    """
+    if postgres_enabled():
+        query = f"""
+            SELECT pr.*, {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
+                   {PG_ROUTE_EFFECTIVE_DIVISION} division,
+                   COALESCE(l.sort_order,999) locality_order
+            FROM planning_routes pr
+            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            LEFT JOIN localities l ON l.name=pr.locality
+             AND l.division={PG_ROUTE_LOCALITY_DIVISION}
+            WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
+        """
+    else:
+        query = """
+            SELECT pr.*, COALESCE(l.sort_order,999) locality_order
+            FROM planning_routes pr
+            LEFT JOIN localities l ON l.name=pr.locality
+             AND l.division=CASE pr.division WHEN 'TW' THEN 'TRELEW' WHEN 'PM' THEN 'PUERTO MADRYN' ELSE pr.division END
+            WHERE pr.planning_date=?
+        """
     params: list[Any] = [planning_date]
     if division and division != "TODAS":
-        query += " AND pr.division=?"
+        query += f" AND {PG_ROUTE_EFFECTIVE_DIVISION if postgres_enabled() else 'pr.division'}=?"
         params.append(route_division_for_db(division))
-    query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+    if postgres_enabled():
+        query += f" ORDER BY CASE WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 1 WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+    else:
+        query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
     with db() as con:
         return [normalize_route_output(dict(r)) for r in con.execute(query, params).fetchall()]
 
 
 def dates_list() -> list[str]:
     with db() as con:
+        if postgres_enabled():
+            rows = con.execute(
+                f"""
+                SELECT DISTINCT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date
+                FROM planning_routes pr
+                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                WHERE {PG_ROUTE_EFFECTIVE_DATE} IS NOT NULL
+                ORDER BY planning_date DESC
+                """
+            ).fetchall()
+            return [normalize_date_value(r[0]) or str(r[0] or "") for r in rows]
         return [
             normalize_date_value(r[0]) or str(r[0] or "")
             for r in con.execute("SELECT DISTINCT planning_date FROM planning_routes ORDER BY planning_date DESC").fetchall()
@@ -1441,16 +1486,31 @@ def copy_last_assignments(planning_date: str) -> int:
 
 def summary(planning_date: str) -> dict[str, Any]:
     with db() as con:
-        row = con.execute(
-            """
-            SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
-                   COALESCE(SUM(hectoliters),0) hl,
-                   SUM(CASE WHEN driver='' THEN 1 ELSE 0 END) pending_driver,
-                   SUM(CASE WHEN locality='' THEN 1 ELSE 0 END) pending_locality,
-                   SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
-            FROM planning_routes WHERE planning_date=?
-            """, (planning_date,)
-        ).fetchone()
+        if postgres_enabled():
+            row = con.execute(
+                f"""
+                SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
+                       COALESCE(SUM(hectoliters),0) hl,
+                       SUM(CASE WHEN COALESCE(driver,'')='' THEN 1 ELSE 0 END) pending_driver,
+                       SUM(CASE WHEN COALESCE(locality,'')='' THEN 1 ELSE 0 END) pending_locality,
+                       SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
+                FROM planning_routes pr
+                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
+                """,
+                (planning_date,),
+            ).fetchone()
+        else:
+            row = con.execute(
+                """
+                SELECT COUNT(*) units,COALESCE(SUM(pdv),0) pdv,COALESCE(SUM(bultos),0) bultos,
+                       COALESCE(SUM(hectoliters),0) hl,
+                       SUM(CASE WHEN driver='' THEN 1 ELSE 0 END) pending_driver,
+                       SUM(CASE WHEN locality='' THEN 1 ELSE 0 END) pending_locality,
+                       SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
+                FROM planning_routes WHERE planning_date=?
+                """, (planning_date,)
+            ).fetchone()
         recargas = con.execute("SELECT COALESCE(SUM(quantity),0) FROM recargas WHERE recarga_date=?", (planning_date,)).fetchone()[0]
     result = dict(row) if row else {}
     result["recargas"] = recargas
@@ -1718,14 +1778,25 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     division = canonical(params.get("division", ""))
     locality = canonical(params.get("locality", ""))
     employee = canonical(params.get("employee", ""))
-    query = """
-        SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
-               locality,observations,recarga_qty,kms,status
-        FROM planning_routes WHERE planning_date BETWEEN ? AND ?
-    """
+    if postgres_enabled():
+        query = f"""
+            SELECT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
+                   {PG_ROUTE_EFFECTIVE_DIVISION} division,
+                   pr.domain,pr.unit_id,pr.pdv,pr.bultos,pr.rendicion,pr.driver,pr.helper1,pr.helper2,
+                   pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status
+            FROM planning_routes pr
+            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            WHERE {PG_ROUTE_EFFECTIVE_DATE} BETWEEN ? AND ?
+        """
+    else:
+        query = """
+            SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
+                   locality,observations,recarga_qty,kms,status
+            FROM planning_routes WHERE planning_date BETWEEN ? AND ?
+        """
     qparams: list[Any] = [start, end]
     if division and division != "TODAS":
-        query += " AND division=?"; qparams.append(route_division_for_db(division))
+        query += f" AND {PG_ROUTE_EFFECTIVE_DIVISION if postgres_enabled() else 'division'}=?"; qparams.append(route_division_for_db(division))
     if locality:
         query += " AND UPPER(TRIM(locality)) LIKE ?"; qparams.append(f"%{locality}%")
     if employee:
@@ -3054,6 +3125,8 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path.lstrip("/")
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
+            elif path == "/api/health":
+                self.send_json({"ok": True, "status": "ready"})
             elif path == "/api/auth/me":
                 user = get_current_user(self)
                 with db() as con:
