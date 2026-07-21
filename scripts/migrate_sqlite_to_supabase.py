@@ -120,6 +120,67 @@ def audit_entity_name(row: dict[str, Any]) -> str:
     return "N/D"
 
 
+def canonical(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def audit_division_allowed_values(pg: Any) -> set[str]:
+    try:
+        with pg.cursor() as cur:
+            cur.execute(
+                """
+                select pg_get_constraintdef(c.oid) as definition
+                from pg_constraint c
+                join pg_class t on t.oid=c.conrelid
+                join pg_namespace n on n.oid=t.relnamespace
+                where n.nspname='public'
+                  and t.relname='audit_log'
+                  and c.contype='c'
+                  and lower(c.conname) like '%division%'
+                """
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return set()
+    values: set[str] = set()
+    for row in rows:
+        definition = str(row[0])
+        for value in re.findall(r"'([^']+)'", definition):
+            values.add(canonical(value))
+    return values
+
+
+def normalize_audit_division_value(division: Any, allowed_values: set[str] | None = None) -> str | None:
+    allowed = {canonical(value) for value in (allowed_values or set()) if canonical(value)}
+    allowed_lookup = {canonical(value): value for value in (allowed_values or set()) if canonical(value)}
+    div = canonical(division)
+
+    if not div:
+        if not allowed or "TODAS" in allowed:
+            return "TODAS"
+        return None
+
+    aliases = [div]
+    if div == "TRELEW":
+        aliases.append("TW")
+    elif div == "TW":
+        aliases.append("TRELEW")
+    elif div in {"PUERTO MADRYN", "PUERTO_MADRYN"}:
+        aliases.extend(["PM", "PUERTO MADRYN"])
+    elif div == "PM":
+        aliases.append("PUERTO MADRYN")
+
+    if not allowed:
+        return div
+
+    for alias in aliases:
+        if alias in allowed:
+            return allowed_lookup.get(alias, alias)
+    if "TODAS" in allowed:
+        return allowed_lookup.get("TODAS", "TODAS")
+    return None
+
+
 def target_columns(pg: Any, table: str) -> set[str]:
     with pg.cursor() as cur:
         cur.execute(
@@ -159,6 +220,7 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
     rows = [normalize_row(row) for row in rows]
     target_cols = target_columns(pg, table)
     if table == "audit_log":
+        allowed_divisions = audit_division_allowed_values(pg)
         if "entity_name" in target_cols and "entity_name" not in columns:
             columns = [*columns, "entity_name"]
             for row in rows:
@@ -167,6 +229,7 @@ def upsert_rows(pg: Any, table: str, columns: list[str], rows: list[dict[str, An
             row["username"] = safe_text(row.get("username"))
             row["action"] = safe_text(row.get("action"))
             row["module"] = safe_text(row.get("module"))
+            row["division"] = normalize_audit_division_value(row.get("division"), allowed_divisions)
             if "entity_name" in columns:
                 row["entity_name"] = safe_text(row.get("entity_name"))
     col_sql = ", ".join(columns)

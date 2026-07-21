@@ -143,7 +143,7 @@ create table if not exists audit_log (
     action text not null default '',
     module text not null default '',
     operational_date text default '',
-    division text default '',
+    division text,
     record_type text default '',
     record_id text default '',
     previous_data text default '',
@@ -265,7 +265,8 @@ alter table audit_log add column if not exists entity_name text not null default
 alter table audit_log add column if not exists action text not null default '';
 alter table audit_log add column if not exists module text not null default '';
 alter table audit_log add column if not exists operational_date text default '';
-alter table audit_log add column if not exists division text default '';
+alter table audit_log add column if not exists division text;
+alter table audit_log alter column division drop default;
 alter table audit_log add column if not exists record_type text default '';
 alter table audit_log add column if not exists record_id text default '';
 alter table audit_log add column if not exists previous_data text default '';

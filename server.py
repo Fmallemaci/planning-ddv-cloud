@@ -290,6 +290,67 @@ def audit_entity_name(user: dict[str, Any] | None, record_type: str = "", record
     return "N/D"
 
 
+def audit_division_allowed_values(con: Any) -> set[str]:
+    if not postgres_enabled():
+        return set()
+    try:
+        rows = con.execute(
+            """
+            SELECT pg_get_constraintdef(c.oid) AS definition
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid=c.conrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            WHERE n.nspname='public'
+              AND t.relname='audit_log'
+              AND c.contype='c'
+              AND lower(c.conname) LIKE '%division%'
+            """
+        ).fetchall()
+    except Exception:
+        return set()
+    values: set[str] = set()
+    for row in rows:
+        definition = str(row["definition"] if isinstance(row, dict) else row[0])
+        for value in re.findall(r"'([^']+)'", definition):
+            values.add(canonical(value))
+    return values
+
+
+def normalize_audit_division_value(division: Any, allowed_values: set[str] | None = None) -> str | None:
+    allowed = {canonical(value) for value in (allowed_values or set()) if canonical(value)}
+    allowed_lookup = {canonical(value): value for value in (allowed_values or set()) if canonical(value)}
+    div = canonical(division)
+
+    if not div:
+        if not allowed or "TODAS" in allowed:
+            return "TODAS"
+        return None
+
+    aliases = [div]
+    if div == "TRELEW":
+        aliases.append("TW")
+    elif div == "TW":
+        aliases.append("TRELEW")
+    elif div in {"PUERTO MADRYN", "PUERTO_MADRYN"}:
+        aliases.extend(["PM", "PUERTO MADRYN"])
+    elif div == "PM":
+        aliases.append("PUERTO MADRYN")
+
+    if not allowed:
+        return div
+
+    for alias in aliases:
+        if alias in allowed:
+            return allowed_lookup.get(alias, alias)
+    if "TODAS" in allowed:
+        return allowed_lookup.get("TODAS", "TODAS")
+    return None
+
+
+def normalize_audit_division(con: Any, division: Any) -> str | None:
+    return normalize_audit_division_value(division, audit_division_allowed_values(con))
+
+
 def register_audit_event(
     con: Any | None,
     user: dict[str, Any] | None,
@@ -341,7 +402,7 @@ def register_audit_event(
             safe_audit_text(action),
             safe_audit_text(module),
             operational_date,
-            canonical(division),
+            normalize_audit_division(con, division),
             str(record_type or ""),
             str(record_id or ""),
             json.dumps(previous_data, ensure_ascii=False, default=str) if previous_data is not None else "",
