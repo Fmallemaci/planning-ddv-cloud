@@ -158,7 +158,14 @@ def normalize_route_output(row: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-PG_ROUTE_EFFECTIVE_DATE = "COALESCE(NULLIF(pr.planning_date::text, '')::date, d.fecha)"
+PG_ROUTE_EFFECTIVE_DATE = "COALESCE(NULLIF(pr.planning_date::text, '')::date, pd.operational_date, d.fecha)"
+PG_ROUTE_BASE_FROM_PR_DIVISION = """
+CASE
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('TW', 'TRELEW') THEN 'TRELEW'
+    WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('PM', 'PUERTO MADRYN', 'PUERTO_MADRYN') THEN 'PUERTO MADRYN'
+    ELSE NULL
+END
+"""
 PG_ROUTE_EFFECTIVE_DIVISION = """
 CASE
     WHEN UPPER(TRIM(COALESCE(pr.division, ''))) IN ('TW', 'TRELEW') THEN 'TW'
@@ -174,6 +181,13 @@ CASE
     WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 'PUERTO MADRYN'
     ELSE ({PG_ROUTE_EFFECTIVE_DIVISION})
 END
+"""
+
+PG_ROUTE_DAY_JOINS = f"""
+LEFT JOIN planning_days pd ON pd.id=pr.planning_day_id
+LEFT JOIN dias_operativos d
+  ON d.fecha=COALESCE(NULLIF(pr.planning_date::text, '')::date, pd.operational_date)
+ AND d.base={PG_ROUTE_BASE_FROM_PR_DIVISION}
 """
 
 
@@ -1150,7 +1164,7 @@ def validate_chess(data: bytes, division: str, planning_date: str) -> list[dict[
         output.append({
             "planning_date": planning_date,
             "source": "CHESS",
-            "division": division,
+            "division": route_division_for_db(division),
             "unit_id": str(row.get("idCns", "") or ""),
             "domain": domain,
             "domain_seq": seq[domain],
@@ -1173,6 +1187,47 @@ def validate_chess(data: bytes, division: str, planning_date: str) -> list[dict[
     return output
 
 
+def ensure_route_planning_context(con: Any, planning_date: Any, division: Any) -> str | None:
+    if not postgres_enabled():
+        return None
+    operational_date = normalize_date_value(planning_date)
+    route_division = route_division_for_db(division)
+    base = display_division(route_division)
+    if not operational_date or route_division not in {"TW", "PM"} or base not in {"TRELEW", "PUERTO MADRYN"}:
+        raise ValueError(
+            f"No se pudo resolver la jornada operativa para {planning_date} / {division}. "
+            "La importacion fue cancelada."
+        )
+
+    planning_day = con.execute(
+        """
+        INSERT INTO planning_days(operational_date,general_status)
+        VALUES(?,?)
+        ON CONFLICT(operational_date) DO UPDATE SET operational_date=excluded.operational_date
+        RETURNING id
+        """,
+        (operational_date, "borrador"),
+    ).fetchone()
+    planning_day_id = str(planning_day["id"] if isinstance(planning_day, dict) else planning_day[0]) if planning_day else ""
+
+    con.execute(
+        """
+        INSERT INTO dias_operativos(fecha,base,estado)
+        VALUES(?,?,?)
+        ON CONFLICT(fecha,base) DO UPDATE SET fecha=excluded.fecha
+        RETURNING id
+        """,
+        (operational_date, base, "BORRADOR"),
+    ).fetchone()
+
+    if not planning_day_id:
+        raise ValueError(
+            f"No se pudo resolver planning_day_id para {operational_date} / {base}. "
+            "La importacion fue cancelada."
+        )
+    return planning_day_id
+
+
 def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
     """Importa una fecha y deja cada división exactamente igual al archivo cargado.
 
@@ -1184,10 +1239,16 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
     removed = 0
     groups: dict[tuple[str, str], set[tuple[str, int]]] = {}
     for rec in records:
+        rec["planning_date"] = normalize_date_value(rec["planning_date"]) or str(rec["planning_date"] or "")
+        rec["division"] = route_division_for_db(rec["division"])
         key = (rec["planning_date"], rec["division"])
         groups.setdefault(key, set()).add((rec["domain"], int(rec["domain_seq"])))
 
     with db() as con:
+        planning_day_ids = {
+            (planning_date, division): ensure_route_planning_context(con, planning_date, division)
+            for planning_date, division in groups
+        }
         # El archivo cargado pasa a ser la fuente de verdad de esa fecha/división.
         for (planning_date, division), incoming in groups.items():
             existing = con.execute(
@@ -1207,12 +1268,13 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
             con.execute(
                 """
                 INSERT INTO planning_routes (
-                    planning_date,source,division,unit_id,domain,domain_seq,pdv,bultos,pure_pallets,
+                    planning_day_id,planning_date,source,division,unit_id,domain,domain_seq,pdv,bultos,pure_pallets,
                     amount,out_route,tot_udt,tot_dia,hectoliters,weight,picking,avg_bultos,avg_value,
                     avg_hl,total_loads,comprobantes,updated_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(planning_date,division,domain,domain_seq) DO UPDATE SET
-                    source=excluded.source,unit_id=excluded.unit_id,pdv=excluded.pdv,bultos=excluded.bultos,
+                    planning_day_id=excluded.planning_day_id,source=excluded.source,unit_id=excluded.unit_id,
+                    pdv=excluded.pdv,bultos=excluded.bultos,
                     pure_pallets=excluded.pure_pallets,amount=excluded.amount,out_route=excluded.out_route,
                     tot_udt=excluded.tot_udt,tot_dia=excluded.tot_dia,hectoliters=excluded.hectoliters,
                     weight=excluded.weight,picking=excluded.picking,avg_bultos=excluded.avg_bultos,
@@ -1220,6 +1282,7 @@ def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
                     comprobantes=excluded.comprobantes,updated_at=excluded.updated_at
                 """,
                 (
+                    planning_day_ids[(rec["planning_date"], rec["division"])],
                     rec["planning_date"], rec["source"], rec["division"], rec["unit_id"], rec["domain"],
                     rec["domain_seq"], rec["pdv"], rec["bultos"], rec["pure_pallets"], rec["amount"],
                     rec["out_route"], rec["tot_udt"], rec["tot_dia"], rec["hectoliters"], rec["weight"],
@@ -1241,7 +1304,7 @@ def route_rows(planning_date: str, division: str = "") -> list[dict[str, Any]]:
                    {PG_ROUTE_EFFECTIVE_DIVISION} division,
                    COALESCE(l.sort_order,999) locality_order
             FROM planning_routes pr
-            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            {PG_ROUTE_DAY_JOINS}
             LEFT JOIN localities l ON l.name=pr.locality
              AND l.division={PG_ROUTE_LOCALITY_DIVISION}
             WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
@@ -1273,7 +1336,7 @@ def dates_list() -> list[str]:
                 f"""
                 SELECT DISTINCT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date
                 FROM planning_routes pr
-                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                {PG_ROUTE_DAY_JOINS}
                 WHERE {PG_ROUTE_EFFECTIVE_DATE} IS NOT NULL
                 ORDER BY planning_date DESC
                 """
@@ -1544,7 +1607,7 @@ def summary(planning_date: str) -> dict[str, Any]:
                        SUM(CASE WHEN COALESCE(locality,'')='' THEN 1 ELSE 0 END) pending_locality,
                        SUM(CASE WHEN status='CONFIRMADO' THEN 1 ELSE 0 END) confirmed
                 FROM planning_routes pr
-                LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+                {PG_ROUTE_DAY_JOINS}
                 WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
                 """,
                 (planning_date,),
@@ -1834,7 +1897,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
                    pr.domain,pr.unit_id,pr.pdv,pr.bultos,pr.rendicion,pr.driver,pr.helper1,pr.helper2,
                    pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status
             FROM planning_routes pr
-            LEFT JOIN dias_operativos d ON d.id=pr.planning_day_id
+            {PG_ROUTE_DAY_JOINS}
             WHERE {PG_ROUTE_EFFECTIVE_DATE} BETWEEN ? AND ?
         """
     else:
