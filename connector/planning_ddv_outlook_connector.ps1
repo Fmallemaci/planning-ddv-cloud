@@ -67,16 +67,18 @@ function Write-AttachmentFile {
 $tempDir = $null
 try {
     Write-ConnectorLog "Inicio" "URL recibida: $ProtocolUrl"
-    $BaseUrl = $env:PLANNING_DDV_BASE_URL
-    if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
-        $BaseUrl = "https://planning-ddv-usuarios-prueba.onrender.com"
-    }
-    $BaseUrl = $BaseUrl.TrimEnd("/")
-
     $token = Get-QueryValue -Url $ProtocolUrl -Name "token"
     Assert-NotBlank "Token" $token
 
-    $packageUrl = "$BaseUrl/api/mail/package/$token"
+    $packageUrl = Get-QueryValue -Url $ProtocolUrl -Name "package_url"
+    if ([string]::IsNullOrWhiteSpace($packageUrl)) {
+        $BaseUrl = $env:PLANNING_DDV_BASE_URL
+        if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
+            $BaseUrl = "https://planning-ddv-usuarios-prueba.onrender.com"
+        }
+        $BaseUrl = $BaseUrl.TrimEnd("/")
+        $packageUrl = "$BaseUrl/api/mail/package/$token"
+    }
     Write-ConnectorLog "Descarga paquete" $packageUrl
     $package = Invoke-RestMethod -Method GET -Uri $packageUrl -TimeoutSec 45
 

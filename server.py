@@ -29,7 +29,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from xml.etree import ElementTree as ET
 
 try:
@@ -2575,7 +2575,9 @@ def outlook_mail_html(planning_date: str, division: str = "TODAS", preview: bool
 </td></tr></table></body></html>'''
 
 def mail_html(planning_date: str, division: str = "TODAS", preview: bool = False) -> str:
-    return outlook_mail_html(planning_date, division, preview)
+    if preview:
+        return planning_ddv_premium_visual_html(planning_date, division)
+    return planning_ddv_outlook_hybrid_html(planning_date, division)
 
 
 def asset_path(filename: str) -> Path:
@@ -2586,9 +2588,661 @@ def asset_path(filename: str) -> Path:
 
 
 def logo_data_uri() -> str:
-    logo_path = asset_path("ddv_logo.png")
-    data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
-    return f"data:image/png;base64,{data}"
+    asset = mail_logo_asset()
+    if not asset:
+        return ""
+    _, content_type, data = asset
+    return f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _image_content_type(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    return None
+
+
+def mail_logo_asset() -> tuple[str, str, bytes] | None:
+    for candidate in (
+        APP_DIR / "ddv_logo.jpg",
+        WEB_DIR / "ddv_logo.jpg",
+        WEB_DIR / "assets" / "ddv_logo.png",
+        APP_DIR / "ddv_logo.png",
+    ):
+        if not candidate.exists():
+            continue
+        data = candidate.read_bytes()
+        content_type = _image_content_type(data)
+        if not content_type:
+            continue
+        name = "ddv_logo.png" if content_type == "image/png" else "ddv_logo.jpg"
+        return name, content_type, data
+    return None
+
+
+def mail_logo_data_uri() -> str:
+    asset = mail_logo_asset()
+    if not asset:
+        return ""
+    _, content_type, data = asset
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def planning_ddv_premium_visual_html(planning_date: str, division: str = "TODAS") -> str:
+    routes = route_rows(planning_date, division)
+    novelties = novelty_rows(planning_date)
+    if division and division != "TODAS":
+        novelties = [n for n in novelties if canonical(n.get("division")) == canonical(division)]
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+    division_label = "TW + PM" if not division or division == "TODAS" else display_division(division)
+    hero_bytes = (WEB_DIR / "assets" / "hero_banner_v35.png").read_bytes()
+    hero_uri = "data:image/png;base64," + base64.b64encode(hero_bytes).decode("ascii")
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value not in (None, "") else "-"))
+
+    def fmt(value: Any, decimals: int = 0) -> str:
+        return _fmt_ar(value, decimals)
+
+    def div_rows(div_name: str) -> list[dict[str, Any]]:
+        return [r for r in routes if canonical(r.get("division")) == div_name]
+
+    def minor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if not is_cyo_route(r)]
+
+    def cyo_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if is_cyo_route(r)]
+
+    def totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+        pdv = sum(safe_number(r.get("pdv")) for r in rows)
+        bultos = sum(safe_number(r.get("bultos")) for r in rows)
+        return {
+            "camiones": float(len(rows)),
+            "pdv": pdv,
+            "bultos": bultos,
+            "drop": bultos / pdv if pdv else 0.0,
+        }
+
+    tw_all = div_rows("TRELEW")
+    pm_all = div_rows("PUERTO MADRYN")
+    tw_minor = minor_rows(tw_all)
+    pm_minor = minor_rows(pm_all)
+    all_minor = tw_minor + pm_minor
+    tw_total = totals(tw_minor)
+    pm_total = totals(pm_minor)
+    valley_total = totals(all_minor)
+    flota_total = 11
+    flota_usada = int(valley_total["camiones"])
+    util_total = flota_usada / flota_total * 100 if flota_total else 0
+
+    def kpi(label: str, value: str, detail: str, icon: str, tone: str = "blue") -> str:
+        return f"""
+        <div class="kpi {tone}">
+          <div class="kpi-icon">{icon}</div>
+          <div class="kpi-value">{value}</div>
+          <div class="kpi-label">{label}</div>
+          <div class="kpi-detail">{detail}</div>
+        </div>"""
+
+    def base_chart() -> str:
+        tw_b = tw_total["bultos"]
+        pm_b = pm_total["bultos"]
+        max_b = max(tw_b, pm_b, 1)
+        tw_w = min(100, max(2, tw_b / max_b * 100))
+        pm_w = min(100, max(2, pm_b / max_b * 100))
+        return f"""
+        <div class="kpi base-summary">
+          <div class="kpi-icon">TW</div>
+          <div class="base-line"><b>TRELEW</b><span>{fmt(tw_b,1)}</span><i><em style="width:{tw_w:.1f}%"></em></i></div>
+          <div class="base-line pm"><b>PTO. MADRYN</b><span>{fmt(pm_b,1)}</span><i><em style="width:{pm_w:.1f}%"></em></i></div>
+          <div class="kpi-label">Resumen por base</div>
+        </div>"""
+
+    def row_html(r: dict[str, Any]) -> str:
+        helpers = " / ".join([str(v) for v in (r.get("helper1"), r.get("helper2")) if v not in (None, "", "-")]) or "-"
+        return (
+            "<tr>"
+            f"<td class='strong'>{esc(r.get('domain'))}</td>"
+            f"<td>{esc(r.get('rendicion'))}</td>"
+            f"<td>{esc(r.get('driver'))}</td>"
+            f"<td>{esc(helpers)}</td>"
+            f"<td class='num'>{fmt(r.get('pdv'))}</td>"
+            f"<td class='num'>{fmt(r.get('bultos'),1)}</td>"
+            f"<td>{esc(r.get('locality'))}</td>"
+            f"<td class='num'>{fmt(r.get('kms'))}</td>"
+            f"<td>{esc(r.get('observations'))}</td>"
+            "</tr>"
+        )
+
+    def rows_table(rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return "<div class='empty-section'>Sin unidades para esta sección.</div>"
+        return (
+            "<table><thead><tr><th>Dominio</th><th>Planilla</th><th>Chofer</th><th>Ayudantes</th>"
+            "<th>PDV</th><th>Bultos</th><th>Localidad</th><th>KMS</th><th>Observaciones</th></tr></thead>"
+            f"<tbody>{''.join(row_html(r) for r in rows)}</tbody></table>"
+        )
+
+    def base_block(title: str, rows: list[dict[str, Any]], cls: str, cap: int) -> str:
+        minor = minor_rows(rows)
+        cyo = cyo_rows(rows)
+        m = totals(minor)
+        util = len(minor) / cap * 100 if cap else 0
+        cyo_block = ""
+        if cyo:
+            cyo_block = f"""
+            <div class="cyo-title">CYO · {esc(title)}</div>
+            {rows_table(cyo)}"""
+        return f"""
+        <section class="base {cls}">
+          <div class="base-head">
+            <h2>{esc(title)}</h2>
+            <span>{len(rows)} unidades totales</span>
+          </div>
+          <div class="base-kpis">
+            <div><b>{len(minor)}</b><small>Camiones sin CYO</small></div>
+            <div><b>{fmt(m["pdv"])}</b><small>PDV</small></div>
+            <div><b>{fmt(m["bultos"],1)}</b><small>Bultos</small></div>
+            <div><b>{fmt(m["drop"],1)}</b><small>Drop size</small></div>
+            <div><b>{fmt(util,1)}%</b><small>Utilización flota</small></div>
+          </div>
+          <div class="table-title">Distribución minorista</div>
+          {rows_table(minor)}
+          {cyo_block}
+        </section>"""
+
+    novelty_html = ""
+    if novelties:
+        novelty_rows_html = "".join(
+            "<tr>"
+            f"<td class='strong'>{esc(n.get('employee_name'))}</td>"
+            f"<td>{esc(n.get('division'))}</td>"
+            f"<td>{esc(n.get('role'))}</td>"
+            f"<td><span class='novelty-badge'>{esc(n.get('reason'))}</span></td>"
+            f"<td>{esc(n.get('notes'))}</td>"
+            "</tr>"
+            for n in novelties
+        )
+        novelty_html = f"""
+        <section class="novelties">
+          <div class="novelties-head"><h2>NOVEDADES DEL DÍA</h2><span>{len(novelties)} registros</span></div>
+          <table><thead><tr><th>Empleado</th><th>Base</th><th>Rol habilitado</th><th>Novedad</th><th>Detalle</th></tr></thead><tbody>{novelty_rows_html}</tbody></table>
+        </section>"""
+
+    sections = "".join(
+        block for block in (
+            base_block("TRELEW", tw_all, "tw", 6) if tw_all else "",
+            base_block("PUERTO MADRYN", pm_all, "pm", 5) if pm_all else "",
+        )
+    )
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box}}body{{margin:0;background:#061522;font-family:Segoe UI,Arial,sans-serif;color:#fff;padding:0}}
+.mail{{width:1440px;margin:0 auto;background:#061522;padding:10px 12px 12px}}
+.hero{{height:265px;border:1px solid #294a60;border-radius:14px;background:url('{hero_uri}') center/cover no-repeat;position:relative;overflow:hidden}}
+.date{{position:absolute;right:24px;top:22px;background:rgba(4,18,29,.84);border:1px solid #36596f;border-radius:12px;padding:14px 22px;text-align:right;box-shadow:0 10px 24px rgba(0,0,0,.28)}}
+.date small{{display:block;color:#9db4c2;text-transform:uppercase;font-weight:900;font-size:13px;letter-spacing:.5px}}.date b{{font-size:31px;line-height:38px}}.date em{{display:block;font-style:normal;color:#6de65a;font-weight:800;font-size:13px}}
+.summary{{display:grid;grid-template-columns:.9fr .9fr 1fr 1fr .75fr .9fr 1.45fr;gap:1px;margin-top:16px;border:1px solid #2b5068;border-radius:14px;overflow:hidden;background:#2b5068}}
+.kpi{{min-height:128px;background:linear-gradient(145deg,#112f45,#071b29);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:10px}}
+.kpi.green{{background:linear-gradient(145deg,#113f24,#082719)}}.kpi.gold{{background:linear-gradient(145deg,#49370a,#251d08)}}.kpi.cyan{{background:linear-gradient(145deg,#093d49,#061f2a)}}
+.kpi-icon{{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.08);font-size:20px;font-weight:900;color:#9feaff;margin-bottom:7px}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
+.kpi-value{{font-size:36px;line-height:40px;font-weight:900;color:#fff}}.kpi-label{{font-size:12px;line-height:15px;text-transform:uppercase;color:#d3e4ef;font-weight:900;letter-spacing:.45px}}.kpi-detail{{font-size:12px;color:#86a4b7;margin-top:5px}}
+.base-summary{{align-items:stretch;padding:12px 14px}}.base-summary .kpi-icon{{margin:0 auto 8px}}.base-line{{display:grid;grid-template-columns:76px 74px 1fr;gap:8px;align-items:center;color:#d7e8f1;font-size:11px;margin:4px 0}}.base-line span{{text-align:right;font-weight:900;color:#fff}}.base-line i{{height:9px;background:#16384d;border:1px solid #355b70;border-radius:8px;overflow:hidden}}.base-line em{{display:block;height:100%;background:linear-gradient(90deg,#41c931,#9df174)}}.base-line.pm em{{background:linear-gradient(90deg,#1187d7,#5cc8ff)}}
+.base{{margin-top:18px;border:1px solid;border-radius:14px;overflow:hidden;background:#071b29}}.base.tw{{border-color:#35962f}}.base.pm{{border-color:#1681d1}}.base-head{{display:flex;justify-content:space-between;align-items:center;padding:17px 22px}}.tw .base-head{{background:linear-gradient(90deg,#17631b,#0c3517)}}.pm .base-head{{background:linear-gradient(90deg,#075fa6,#073458)}}.base-head h2{{margin:0;font-size:30px;letter-spacing:.5px}}.base-head span{{background:rgba(255,255,255,.13);padding:8px 14px;border-radius:20px;font-size:14px;font-weight:900}}
+.base-kpis{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;padding:16px}}.base-kpis>div{{min-height:112px;border:1px solid;border-radius:12px;display:grid;place-items:center;align-content:center;text-align:center;padding:10px}}.tw .base-kpis>div{{background:linear-gradient(145deg,#123c24,#09291a);border-color:#2d7136}}.pm .base-kpis>div{{background:linear-gradient(145deg,#0d3154,#081f37);border-color:#245e95}}.base-kpis b{{font-size:33px;line-height:38px}}.base-kpis small{{font-size:12px;text-transform:uppercase;color:#c2d3de;font-weight:900;letter-spacing:.3px}}
+.table-title,.cyo-title{{margin:4px 16px 9px;color:#d7e9f4;font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:.6px}}.cyo-title{{margin-top:18px;color:#ffc04b}}
+table{{width:calc(100% - 32px);margin:0 16px 16px;border-collapse:collapse;font-size:13px;border:1px solid #24465d}}th{{padding:11px 10px;text-align:left;text-transform:uppercase;color:#fff;font-size:12px;letter-spacing:.3px;background:#123c58}}td{{padding:10px;border-top:1px solid #17394d;color:#eef6fb}}tr:nth-child(even) td{{background:#0a2232}}.strong{{font-weight:900;color:#fff}}.num{{text-align:right}}.empty-section{{margin:0 16px 16px;padding:18px;border:1px solid #24465d;color:#91a9b8}}
+.novelties{{margin-top:18px;border:1px solid #d49a21;border-radius:14px;overflow:hidden;background:#101e28}}.novelties-head{{display:flex;justify-content:space-between;align-items:center;padding:15px 20px;background:linear-gradient(90deg,#6d4800,#2b2514)}}.novelties-head h2{{margin:0;font-size:23px;color:#ffd56a}}.novelties-head span{{background:rgba(255,213,106,.14);border:1px solid rgba(255,213,106,.35);padding:7px 13px;border-radius:18px;color:#ffe5a3;font-size:13px;font-weight:900}}.novelties th{{background:#8a5b00;color:#fff4d0}}.novelty-badge{{display:inline-block;padding:5px 10px;border-radius:14px;background:#fff1cc;color:#8f5b00;font-weight:900;font-size:12px}}
+.foot{{margin-top:16px;padding:15px 18px;border:1px solid #29495e;border-radius:10px;color:#91a9b8;font-size:12px;display:flex;justify-content:space-between}}
+</style></head><body><div class="mail">
+<div class="hero"><div class="date"><small>Fecha operativa</small><b>{display_date}</b><em>{esc(division_label)}</em></div></div>
+<div class="summary">
+{kpi("Flota total", str(flota_total), "TW 6 + PM 5", "FT")}
+{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignación", "FU", "green")}
+{kpi("Utilización de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", "UF", "gold")}
+{kpi("Bultos a repartir", fmt(valley_total["bultos"],1), "Sin CYO", "BL")}
+{kpi("PDV", fmt(valley_total["pdv"]), "Total del día", "PDV", "cyan")}
+{kpi("Drop size", fmt(valley_total["drop"],1), "Bultos / PDV", "DS")}
+{base_chart()}
+</div>
+{sections}
+{novelty_html}
+<div class="foot"><span>Reporte generado por Planning DDV</span><span>Distribuidora del Valle · Control de Distribución</span></div>
+</div></body></html>"""
+
+
+def planning_ddv_outlook_image_html(planning_date: str, division: str = "TODAS") -> str:
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#061522;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background-color:#061522;">
+    <tr>
+      <td align="center" style="padding:0;background-color:#061522;">
+        <img src="cid:planning_visual" width="1200" alt="Salida diaria Planning DDV {display_date}" style="display:block;width:1200px;max-width:100%;height:auto;border:0;outline:none;text-decoration:none;">
+      </td>
+    </tr>
+  </table>
+</body></html>"""
+
+
+def planning_ddv_premium_top_html(planning_date: str, division: str = "TODAS") -> str:
+    routes = route_rows(planning_date, division)
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+    division_label = "TW + PM" if not division or division == "TODAS" else display_division(division)
+    hero_bytes = (WEB_DIR / "assets" / "hero_banner_v35.png").read_bytes()
+    hero_uri = "data:image/png;base64," + base64.b64encode(hero_bytes).decode("ascii")
+
+    def fmt(value: Any, decimals: int = 0) -> str:
+        return _fmt_ar(value, decimals)
+
+    def div_rows(div_name: str) -> list[dict[str, Any]]:
+        return [r for r in routes if canonical(r.get("division")) == div_name and not is_cyo_route(r)]
+
+    def totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+        pdv = sum(safe_number(r.get("pdv")) for r in rows)
+        bultos = sum(safe_number(r.get("bultos")) for r in rows)
+        return {
+            "camiones": float(len(rows)),
+            "pdv": pdv,
+            "bultos": bultos,
+            "drop": bultos / pdv if pdv else 0.0,
+        }
+
+    tw_total = totals(div_rows("TRELEW"))
+    pm_total = totals(div_rows("PUERTO MADRYN"))
+    all_minor = div_rows("TRELEW") + div_rows("PUERTO MADRYN")
+    valley = totals(all_minor)
+    flota_total = 11
+    flota_usada = int(valley["camiones"])
+    util_total = flota_usada / flota_total * 100 if flota_total else 0
+
+    def kpi(label: str, value: str, detail: str, icon: str, tone: str = "blue") -> str:
+        return f"""
+        <div class="kpi {tone}">
+          <div class="kpi-icon">{icon}</div>
+          <div class="kpi-value">{value}</div>
+          <div class="kpi-label">{label}</div>
+          <div class="kpi-detail">{detail}</div>
+        </div>"""
+
+    tw_b = tw_total["bultos"]
+    pm_b = pm_total["bultos"]
+    max_b = max(tw_b, pm_b, 1)
+    tw_w = min(100, max(2, tw_b / max_b * 100))
+    pm_w = min(100, max(2, pm_b / max_b * 100))
+    base_summary = f"""
+    <div class="kpi base-summary">
+      <div class="kpi-icon">TW</div>
+      <div class="base-line"><b>TRELEW</b><span>{fmt(tw_b,1)}</span><i><em style="width:{tw_w:.1f}%"></em></i></div>
+      <div class="base-line pm"><b>PTO. MADRYN</b><span>{fmt(pm_b,1)}</span><i><em style="width:{pm_w:.1f}%"></em></i></div>
+      <div class="kpi-label">Resumen por base</div>
+    </div>"""
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{{box-sizing:border-box}}body{{margin:0;background:#061522;font-family:Segoe UI,Arial,sans-serif;color:#fff;padding:0}}
+.top{{width:1480px;background:#061522;padding:0 0 16px}}
+.hero{{height:292px;border:1px solid #294a60;border-radius:16px;background:url('{hero_uri}') center/cover no-repeat;position:relative;overflow:hidden}}
+.date{{position:absolute;right:26px;top:24px;background:rgba(4,18,29,.86);border:1px solid #36596f;border-radius:14px;padding:16px 24px;text-align:right;box-shadow:0 12px 28px rgba(0,0,0,.32)}}
+.date small{{display:block;color:#9db4c2;text-transform:uppercase;font-weight:900;font-size:15px;letter-spacing:.5px}}.date b{{font-size:38px;line-height:44px}}.date em{{display:block;font-style:normal;color:#6de65a;font-weight:900;font-size:15px}}
+.summary{{display:grid;grid-template-columns:.9fr .9fr 1fr 1fr .75fr .9fr 1.45fr;gap:1px;margin-top:16px;border:1px solid #2b5068;border-radius:15px;overflow:hidden;background:#2b5068}}
+.kpi{{min-height:142px;background:linear-gradient(145deg,#112f45,#071b29);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:12px}}
+.kpi.green{{background:linear-gradient(145deg,#113f24,#082719)}}.kpi.gold{{background:linear-gradient(145deg,#49370a,#251d08)}}.kpi.cyan{{background:linear-gradient(145deg,#093d49,#061f2a)}}
+.kpi-icon{{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.09);font-size:22px;font-weight:900;color:#9feaff;margin-bottom:8px}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
+.kpi-value{{font-size:40px;line-height:44px;font-weight:900;color:#fff}}.kpi-label{{font-size:15px;line-height:18px;text-transform:uppercase;color:#d3e4ef;font-weight:900;letter-spacing:.45px}}.kpi-detail{{font-size:13px;color:#86a4b7;margin-top:6px}}
+.base-summary{{align-items:stretch;padding:14px 15px}}.base-summary .kpi-icon{{margin:0 auto 9px}}.base-line{{display:grid;grid-template-columns:86px 82px 1fr;gap:9px;align-items:center;color:#d7e8f1;font-size:13px;margin:5px 0}}.base-line span{{text-align:right;font-weight:900;color:#fff}}.base-line i{{height:11px;background:#16384d;border:1px solid #355b70;border-radius:9px;overflow:hidden}}.base-line em{{display:block;height:100%;background:linear-gradient(90deg,#41c931,#9df174)}}.base-line.pm em{{background:linear-gradient(90deg,#1187d7,#5cc8ff)}}
+</style></head><body><div class="top">
+<div class="hero"><div class="date"><small>Fecha operativa</small><b>{display_date}</b><em>{html.escape(division_label)}</em></div></div>
+<div class="summary">
+{kpi("Flota total", str(flota_total), "TW 6 + PM 5", "FT")}
+{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignacion", "FU", "green")}
+{kpi("Utilizacion de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", "UF", "gold")}
+{kpi("Bultos a repartir", fmt(valley["bultos"],1), "Sin CYO", "BL")}
+{kpi("PDV", fmt(valley["pdv"]), "Total del dia", "PDV", "cyan")}
+{kpi("Drop size", fmt(valley["drop"],1), "Bultos / PDV", "DS")}
+{base_summary}
+</div></div></body></html>"""
+
+
+def planning_ddv_outlook_hybrid_html(planning_date: str, division: str = "TODAS") -> str:
+    routes = route_rows(planning_date, division)
+    novelties = novelty_rows(planning_date)
+    if division and division != "TODAS":
+        novelties = [n for n in novelties if canonical(n.get("division")) == canonical(division)]
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value not in (None, "") else "-"))
+
+    def fmt(value: Any, decimals: int = 0) -> str:
+        return _fmt_ar(value, decimals)
+
+    def mail_cell(value: Any, width: int, bold: bool = False, align: str = "left") -> str:
+        weight = "font-weight:800;" if bold else "font-weight:500;"
+        return (
+            f"<td width='{width}' align='{align}' style='width:{width}px;padding:10px 10px;"
+            "font-size:15px;line-height:21px;border-top:1px solid #17394d;"
+            f"color:#eef6fb;text-align:{align};vertical-align:top;{weight}'>"
+            f"{esc(value)}</td>"
+        )
+
+    def route_row(r: dict[str, Any]) -> str:
+        return (
+            "<tr>"
+            + mail_cell(r.get("domain"), 78, True)
+            + mail_cell(r.get("rendicion"), 76)
+            + mail_cell(r.get("driver"), 212, True)
+            + mail_cell(r.get("helper1"), 212)
+            + mail_cell(r.get("helper2"), 212)
+            + mail_cell(fmt(r.get("pdv")), 72, False, "right")
+            + mail_cell(fmt(r.get("bultos"), 1), 92, False, "right")
+            + mail_cell(r.get("locality"), 178, True)
+            + mail_cell(fmt(r.get("kms")), 72, False, "right")
+            + mail_cell(r.get("observations"), 244)
+            + "</tr>"
+        )
+
+    def route_table(rows: list[dict[str, Any]], empty_label: str) -> str:
+        if not rows:
+            return f"<tr><td style='padding:18px 20px;color:#9bb7c8;font-size:15px;'>{html.escape(empty_label)}</td></tr>"
+        headers = [
+            ("Dominio", 78), ("Planilla", 76), ("Chofer", 212), ("Ayudante 1", 212),
+            ("Ayudante 2", 212), ("PDV", 72), ("Bultos", 92), ("Localidad", 178),
+            ("KMS", 72), ("Observaciones", 244),
+        ]
+        head = "".join(
+            f"<th width='{w}' style='width:{w}px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#ffffff;background:#123c58;border-bottom:1px solid #25566f;'>{html.escape(label)}</th>"
+            for label, w in headers
+        )
+        return (
+            "<tr><td style='padding:0 16px 18px 16px;'>"
+            "<table role='presentation' width='1448' cellpadding='0' cellspacing='0' border='0' style='width:1448px;table-layout:fixed;border-collapse:collapse;border:1px solid #24465d;background:#071b29;'>"
+            f"<thead><tr>{head}</tr></thead><tbody>{''.join(route_row(r) for r in rows)}</tbody></table></td></tr>"
+        )
+
+    def totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+        pdv = sum(safe_number(r.get("pdv")) for r in rows)
+        bultos = sum(safe_number(r.get("bultos")) for r in rows)
+        return {"pdv": pdv, "bultos": bultos, "drop": bultos / pdv if pdv else 0.0}
+
+    def metric(label: str, value: str) -> str:
+        return (
+            "<td width='20%' align='center' style='width:20%;padding:18px 8px;border-right:1px solid #244b60;'>"
+            f"<div style='font-size:34px;line-height:39px;font-weight:900;color:#ffffff;'>{html.escape(value)}</div>"
+            f"<div style='font-size:14px;line-height:18px;text-transform:uppercase;color:#c5d7e2;font-weight:900;'>{html.escape(label)}</div>"
+            "</td>"
+        )
+
+    def base_block(title: str, rows: list[dict[str, Any]], kind: str, cap: int) -> str:
+        minor = [r for r in rows if not is_cyo_route(r)]
+        cyo = [r for r in rows if is_cyo_route(r)]
+        total = totals(minor)
+        util = len(minor) / cap * 100 if cap else 0
+        color = "#17631b" if kind == "tw" else "#075fa6"
+        color2 = "#0c3517" if kind == "tw" else "#073458"
+        border = "#35962f" if kind == "tw" else "#1681d1"
+        cyo_html = ""
+        if cyo:
+            cyo_html = (
+                "<tr><td style='padding:2px 16px 10px 16px;color:#ffc04b;font-size:15px;line-height:20px;font-weight:900;text-transform:uppercase;'>"
+                f"CYO · {esc(title)}</td></tr>"
+                + route_table(cyo, "Sin unidades CYO.")
+            )
+        return f"""
+        <tr><td style="padding:18px 0 0 0;">
+          <table role="presentation" width="1480" cellpadding="0" cellspacing="0" border="0" style="width:1480px;border-collapse:collapse;border:1px solid {border};background:#071b29;">
+            <tr>
+              <td style="padding:18px 24px;background:{color};background:linear-gradient(90deg,{color},{color2});font-size:28px;line-height:34px;font-weight:900;color:#ffffff;">{esc(title)}</td>
+              <td align="right" style="padding:18px 24px;background:{color2};font-size:15px;line-height:19px;font-weight:900;color:#d8f4ff;">{len(rows)} unidades totales</td>
+            </tr>
+            <tr><td colspan="2" style="padding:16px 16px 8px 16px;">
+              <table role="presentation" width="1448" cellpadding="0" cellspacing="0" border="0" style="width:1448px;border-collapse:collapse;background:#0a2434;border:1px solid #244b60;">
+                <tr>{metric("Camiones sin CYO", fmt(len(minor)))}{metric("PDV", fmt(total["pdv"]))}{metric("Bultos", fmt(total["bultos"],1))}{metric("Drop size", fmt(total["drop"],1))}{metric("Utilizacion flota", f"{fmt(util,1)}%")}</tr>
+              </table>
+            </td></tr>
+            <tr><td colspan="2" style="padding:6px 16px 10px 16px;color:#d7e9f4;font-size:15px;line-height:20px;font-weight:900;text-transform:uppercase;">Distribucion minorista</td></tr>
+            {route_table(minor, "Sin unidades de distribucion minorista.")}
+            {cyo_html}
+          </table>
+        </td></tr>"""
+
+    sections = "".join(
+        block for block in (
+            base_block("TRELEW", [r for r in routes if canonical(r.get("division")) == "TRELEW"], "tw", 6)
+            if any(canonical(r.get("division")) == "TRELEW" for r in routes) else "",
+            base_block("PUERTO MADRYN", [r for r in routes if canonical(r.get("division")) == "PUERTO MADRYN"], "pm", 5)
+            if any(canonical(r.get("division")) == "PUERTO MADRYN" for r in routes) else "",
+        ) if block
+    )
+
+    novelty_html = ""
+    if novelties:
+        novelty_rows_html = "".join(
+            "<tr>"
+            f"<td width='280' style='width:280px;font-weight:800;color:#ffffff;'>{esc(n.get('employee_name'))}</td>"
+            f"<td width='180' style='width:180px;'>{esc(n.get('division'))}</td>"
+            f"<td width='200' style='width:200px;'>{esc(n.get('role'))}</td>"
+            f"<td width='210' style='width:210px;font-weight:800;color:#ffd56a;'>{esc(n.get('reason'))}</td>"
+            f"<td width='578' style='width:578px;'>{esc(n.get('notes'))}</td>"
+            "</tr>"
+            for n in novelties
+        )
+        novelty_html = f"""
+        <tr><td style="padding:18px 0 0 0;">
+          <table role="presentation" width="1480" cellpadding="0" cellspacing="0" border="0" style="width:1480px;border-collapse:collapse;border:1px solid #d49a21;background:#101e28;">
+            <tr><td style="padding:17px 22px;background:#6d4800;font-size:25px;line-height:31px;font-weight:900;color:#ffd56a;">NOVEDADES DEL DIA</td><td align="right" style="padding:17px 22px;background:#2b2514;font-size:15px;color:#ffe5a3;font-weight:900;">{len(novelties)} registros</td></tr>
+            <tr><td colspan="2" style="padding:0 16px 18px 16px;">
+              <table role="presentation" width="1448" cellpadding="0" cellspacing="0" border="0" style="width:1448px;table-layout:fixed;border-collapse:collapse;border:1px solid #725821;background:#122633;">
+                <thead><tr><th width="280" style="width:280px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Empleado</th><th width="180" style="width:180px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Base</th><th width="200" style="width:200px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Rol habilitado</th><th width="210" style="width:210px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Novedad</th><th width="578" style="width:578px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Detalle</th></tr></thead>
+                <tbody>{novelty_rows_html}</tbody>
+              </table>
+            </td></tr>
+          </table>
+        </td></tr>"""
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#061522;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background-color:#061522;">
+  <tr><td align="center" style="padding:0;background-color:#061522;">
+    <table role="presentation" width="1480" cellpadding="0" cellspacing="0" border="0" style="width:1480px;border-collapse:collapse;background-color:#061522;font-family:Segoe UI,Arial,sans-serif;color:#eef6fb;">
+      <tr><td style="padding:0 0 4px 0;">
+        <img src="cid:planning_top" width="1480" alt="Planning DDV {display_date}" style="display:block;width:1480px;height:auto;border:0;outline:none;text-decoration:none;">
+      </td></tr>
+      {sections}
+      {novelty_html}
+      <tr><td style="padding:18px 4px 4px 4px;color:#91a9b8;font-size:14px;line-height:20px;">Reporte generado por Planning DDV · Distribuidora del Valle · Control de Distribucion</td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>"""
+
+
+def planning_ddv_outlook_mail_html(planning_date: str, division: str = "TODAS", preview: bool = False) -> str:
+    routes = route_rows(planning_date, division)
+    novelties = novelty_rows(planning_date)
+    if division and division != "TODAS":
+        novelties = [n for n in novelties if canonical(n.get("division")) == canonical(division)]
+
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+    division_label = "TW + PM" if not division or division == "TODAS" else display_division(division)
+    logo_src = mail_logo_data_uri() if preview else ("cid:ddv_logo" if mail_logo_asset() else "")
+
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value not in (None, "") else "-"))
+
+    def fmt(value: Any, decimals: int = 0) -> str:
+        return _fmt_ar(value, decimals)
+
+    def div_rows(div_name: str) -> list[dict[str, Any]]:
+        return [r for r in routes if canonical(r.get("division")) == div_name]
+
+    def minor_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if not is_cyo_route(r)]
+
+    def cyo_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if is_cyo_route(r)]
+
+    def metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+        return {
+            "camiones": float(len(rows)),
+            "pdv": sum(safe_number(r.get("pdv")) for r in rows),
+            "bultos": sum(safe_number(r.get("bultos")) for r in rows),
+        }
+
+    tw_all = div_rows("TRELEW")
+    pm_all = div_rows("PUERTO MADRYN")
+    tw_minor = minor_rows(tw_all)
+    pm_minor = minor_rows(pm_all)
+    valley_minor = tw_minor + pm_minor
+    valley = metrics(valley_minor)
+    tw_m = metrics(tw_minor)
+    pm_m = metrics(pm_minor)
+    cyo_count = len(cyo_rows(tw_all) + cyo_rows(pm_all))
+
+    def drop(m: dict[str, float]) -> str:
+        return fmt(m["bultos"] / m["pdv"], 1) if m["pdv"] else "0,0"
+
+    def card(title: str, m: dict[str, float], color: str, subtitle: str) -> str:
+        return f"""
+        <td width="33.33%" valign="top" style="padding:0 6px 12px 6px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;border:1px solid #D9E2EC;background-color:#FFFFFF;">
+            <tr><td style="padding:11px 14px;background-color:{color};font-family:Arial,'Segoe UI',sans-serif;font-size:15px;line-height:19px;color:#FFFFFF;font-weight:700;">{esc(title)}</td></tr>
+            <tr><td style="padding:15px 14px 13px 14px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+                <tr>
+                  <td width="33%" align="center" style="font-family:Arial,'Segoe UI',sans-serif;color:#1F2937;border-right:1px solid #E5EDF3;"><div style="font-size:24px;line-height:28px;font-weight:700;">{fmt(m["camiones"])}</div><div style="font-size:10px;line-height:13px;color:#60778A;font-weight:700;">CAMIONES</div></td>
+                  <td width="33%" align="center" style="font-family:Arial,'Segoe UI',sans-serif;color:#1F2937;border-right:1px solid #E5EDF3;"><div style="font-size:24px;line-height:28px;font-weight:700;">{fmt(m["pdv"])}</div><div style="font-size:10px;line-height:13px;color:#60778A;font-weight:700;">PDV</div></td>
+                  <td width="34%" align="center" style="font-family:Arial,'Segoe UI',sans-serif;color:#1F2937;"><div style="font-size:24px;line-height:28px;font-weight:700;">{fmt(m["bultos"],1)}</div><div style="font-size:10px;line-height:13px;color:#60778A;font-weight:700;">BULTOS</div></td>
+                </tr>
+              </table>
+              <div style="padding-top:10px;font-family:Arial,'Segoe UI',sans-serif;font-size:11px;line-height:15px;color:#60778A;">Drop size: <b style="color:#1F2937;">{drop(m)}</b> &nbsp; {esc(subtitle)}</div>
+            </td></tr>
+          </table>
+        </td>"""
+
+    def table_rows(rows: list[dict[str, Any]]) -> str:
+        if not rows:
+            return "<tr><td colspan='9' style='padding:12px;font-family:Arial,sans-serif;font-size:12px;color:#60778A;border-top:1px solid #D9E2EC;'>Sin unidades para esta sección.</td></tr>"
+        out: list[str] = []
+        for idx, r in enumerate(rows):
+            bg = "#FFFFFF" if idx % 2 == 0 else "#F5F7FA"
+            helpers = " / ".join([str(v) for v in (r.get("helper1"), r.get("helper2")) if v not in (None, "", "-")]) or "-"
+            out.append(
+                f"<tr style='background-color:{bg};'>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#0F2F57;font-weight:700;'>{esc(r.get('domain'))}</td>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(r.get('rendicion'))}</td>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(r.get('driver'))}</td>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(helpers)}</td>"
+                f"<td align='right' style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{fmt(r.get('pdv'))}</td>"
+                f"<td align='right' style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{fmt(r.get('bultos'),1)}</td>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(r.get('locality'))}</td>"
+                f"<td align='right' style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{fmt(r.get('kms'))}</td>"
+                f"<td style='padding:9px 8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(r.get('observations'))}</td>"
+                "</tr>"
+            )
+        return "".join(out)
+
+    def route_table(rows: list[dict[str, Any]]) -> str:
+        headers = (
+            ("DOMINIO", "left"), ("PLANILLA", "left"), ("CHOFER", "left"),
+            ("AYUDANTES", "left"), ("PDV", "right"), ("BULTOS", "right"),
+            ("LOCALIDAD", "left"), ("KMS", "right"), ("OBSERVACIONES", "left"),
+        )
+        head = "".join(
+            f"<th align='{align}' style='padding:9px 8px;background-color:#0F2F57;color:#FFFFFF;font-family:Arial,sans-serif;font-size:11px;line-height:14px;'>{label}</th>"
+            for label, align in headers
+        )
+        return (
+            "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' border='0' style='width:100%;border-collapse:collapse;border:1px solid #D9E2EC;background-color:#FFFFFF;'>"
+            f"<tr>{head}</tr>{table_rows(rows)}</table>"
+        )
+
+    def block(title: str, rows: list[dict[str, Any]], color: str) -> str:
+        return f"""
+        <tr><td style="padding:0 22px 16px 22px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+            <tr><td style="padding:11px 14px;background-color:{color};font-family:Arial,'Segoe UI',sans-serif;font-size:16px;line-height:20px;color:#FFFFFF;font-weight:700;">{esc(title)}</td></tr>
+            <tr><td>{route_table(rows)}</td></tr>
+          </table>
+        </td></tr>"""
+
+    section_html: list[str] = []
+    for div_name, rows, color in (("TRELEW", tw_all, "#0D5EA8"), ("PUERTO MADRYN", pm_all, "#07898F")):
+        if not rows:
+            continue
+        section_html.append(
+            f"<tr><td style='padding:8px 22px 8px 22px;font-family:Arial,sans-serif;font-size:22px;line-height:28px;color:#0F2F57;font-weight:700;'>{esc(div_name)}</td></tr>"
+        )
+        section_html.append(block("Distribución minorista", minor_rows(rows), color))
+        cyo = cyo_rows(rows)
+        if cyo:
+            section_html.append(block("CYO", cyo, "#A56E00"))
+
+    novelty_html = ""
+    if novelties:
+        novelty_rows_html = "".join(
+            f"<tr><td style='padding:8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;font-weight:700;'>{esc(n.get('employee_name'))}</td>"
+            f"<td style='padding:8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(n.get('division'))}</td>"
+            f"<td style='padding:8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(n.get('reason'))}</td>"
+            f"<td style='padding:8px;border-top:1px solid #D9E2EC;font-family:Arial,sans-serif;font-size:12px;color:#1F2937;'>{esc(n.get('notes'))}</td></tr>"
+            for n in novelties
+        )
+        novelty_html = (
+            "<tr><td style='padding:0 22px 22px 22px;'>"
+            "<table role='presentation' width='100%' cellpadding='0' cellspacing='0' border='0' style='width:100%;border-collapse:collapse;border:1px solid #D9E2EC;background-color:#FFFFFF;'>"
+            "<tr><td colspan='4' style='padding:11px 14px;background-color:#F1AE17;font-family:Arial,sans-serif;font-size:16px;line-height:20px;color:#0F2F57;font-weight:700;'>Novedades del día</td></tr>"
+            "<tr><th align='left' style='padding:8px;background-color:#FFF7E2;font-family:Arial,sans-serif;font-size:11px;color:#0F2F57;'>EMPLEADO</th><th align='left' style='padding:8px;background-color:#FFF7E2;font-family:Arial,sans-serif;font-size:11px;color:#0F2F57;'>BASE</th><th align='left' style='padding:8px;background-color:#FFF7E2;font-family:Arial,sans-serif;font-size:11px;color:#0F2F57;'>NOVEDAD</th><th align='left' style='padding:8px;background-color:#FFF7E2;font-family:Arial,sans-serif;font-size:11px;color:#0F2F57;'>DETALLE</th></tr>"
+            f"{novelty_rows_html}</table></td></tr>"
+        )
+
+    logo_html = (
+        f"<img src='{logo_src}' width='210' alt='Distribuidora del Valle' style='display:block;width:210px;height:auto;border:0;outline:none;text-decoration:none;'>"
+        if logo_src else
+        "<div style='font-family:Arial,sans-serif;font-size:28px;line-height:34px;color:#FFFFFF;font-weight:700;text-align:right;'>DDV</div>"
+    )
+
+    return f"""<!doctype html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background-color:#EAF0F5;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;background-color:#EAF0F5;">
+<tr><td align="center" style="padding:18px 10px;">
+<table role="presentation" width="1000" cellpadding="0" cellspacing="0" border="0" style="width:1000px;border-collapse:collapse;background-color:#FFFFFF;border:1px solid #D9E2EC;">
+  <tr><td style="padding:0;background-color:#0F2F57;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td width="690" valign="middle" style="padding:26px 28px;font-family:Arial,'Segoe UI',sans-serif;color:#FFFFFF;">
+          <div style="font-size:13px;line-height:18px;color:#90D15E;font-weight:700;text-transform:uppercase;">Informe operativo diario</div>
+          <div style="font-size:40px;line-height:46px;font-weight:700;letter-spacing:.2px;">SALIDA DIARIA DDV</div>
+          <div style="font-size:16px;line-height:22px;color:#DCEAF3;">Fecha operativa: <b>{display_date}</b> &nbsp; | &nbsp; División: <b>{esc(division_label)}</b></div>
+        </td>
+        <td width="310" valign="middle" align="right" style="padding:26px 28px;">{logo_html}</td>
+      </tr>
+    </table>
+  </td></tr>
+  <tr><td style="height:5px;line-height:5px;background-color:#4EBC35;font-size:1px;">&nbsp;</td></tr>
+  <tr><td style="padding:20px 16px 8px 16px;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;border-collapse:collapse;">
+      <tr>
+        {card("VALLE", valley, "#0F2F57", f"CYO: {cyo_count} unidades")}
+        {card("TRELEW", tw_m, "#0D5EA8", "Base TW")}
+        {card("PUERTO MADRYN", pm_m, "#07898F", "Base PM")}
+      </tr>
+    </table>
+  </td></tr>
+  {''.join(section_html)}
+  {novelty_html}
+  <tr><td style="padding:13px 22px;background-color:#0F2F57;font-family:Arial,'Segoe UI',sans-serif;font-size:12px;line-height:17px;color:#DCEAF3;">
+    Reporte generado por Planning DDV. Datos operativos de la fecha seleccionada, sin envío automático.
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
 
 
 def _pdf_escape(text: Any) -> bytes:
@@ -2901,18 +3555,25 @@ def create_outlook_connector_package(
     subject = str(payload.get("subject") or "").strip() or f"Salida diaria DDV - {datetime.fromisoformat(planning_date).strftime('%d/%m/%Y')}"
     to = str(payload.get("to") or "Planning").strip() or "Planning"
     cc = str(payload.get("cc") or "").strip()
+    routes = route_rows(planning_date, division)
+    if not routes:
+        raise ValueError("No hay salidas cargadas para generar el mail operativo.")
+    visual_path = render_mail_top_image(planning_date, division)
+    if not visual_path.exists() or visual_path.stat().st_size <= 0:
+        raise ValueError("No se pudo generar la lámina visual del mail operativo.")
     html_body = mail_html(planning_date, division, preview=False)
+    if not html_body.strip():
+        raise ValueError("No se pudo generar el cuerpo real del mail operativo.")
     attachments: list[dict[str, Any]] = []
 
-    try:
-        logo = asset_path("ddv_logo.png")
-        attachments.append(_attachment_from_bytes("ddv_logo.png", "image/png", logo.read_bytes(), cid="ddv_logo", inline=True))
-    except Exception:
-        pass
+    attachments.append(_attachment_from_bytes(visual_path.name, "image/png", visual_path.read_bytes(), cid="planning_top", inline=True))
 
     safe_div = re.sub(r"[^A-Z0-9]+", "_", canonical(division)).strip("_") or "TODAS"
-    pdf_name = f"salida_diaria_{planning_date}_{safe_div}.pdf"
-    attachments.append(_attachment_from_bytes(pdf_name, "application/pdf", build_pdf_bytes(planning_date, division)))
+    pdf_path = generate_pdf(planning_date, division)
+    if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
+        raise ValueError("No se pudo generar el PDF real de la salida seleccionada.")
+    pdf_name = pdf_path.name or f"salida_diaria_{planning_date}_{safe_div}.pdf"
+    attachments.append(_attachment_from_bytes(pdf_name, "application/pdf", pdf_path.read_bytes()))
 
     token = secrets.token_urlsafe(32)
     now_ts = time.time()
@@ -2930,12 +3591,16 @@ def create_outlook_connector_package(
             "subject": subject,
             "html_body": html_body,
             "attachments": attachments,
+            "visual_path": str(visual_path),
+            "pdf_path": str(pdf_path),
         }
+    package_url = f"{_base_url_from_request(handler)}/api/mail/package/{token}"
+    protocol_url = f"planningddv://mail?token={quote(token, safe='')}&package_url={quote(package_url, safe='')}"
     return {
         "token": token,
         "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
-        "protocol_url": f"planningddv://mail?token={token}",
-        "package_url": f"{_base_url_from_request(handler)}/api/mail/package/{token}",
+        "protocol_url": protocol_url,
+        "package_url": package_url,
     }
 
 
@@ -2979,30 +3644,55 @@ def render_mail_image(planning_date: str, division: str = "TODAS") -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     html_path = EXPORTS_DIR / f"lamina_{planning_date}_{stamp}.html"
     png_path = EXPORTS_DIR / f"lamina_{planning_date}_{stamp}.png"
-    logo_uri = logo_data_uri()
-    visual_html = report_html(planning_date, division, logo_src=logo_uri, include_novelties=True)
+    visual_html = planning_ddv_premium_visual_html(planning_date, division)
     # El mail es una lámina: eliminamos sombras/márgenes externos para capturarla limpia.
-    visual_html = visual_html.replace(
-        "</style>",
-        "body{padding:0!important;background:#ffffff!important}.report{max-width:1220px!important;border-radius:0!important;box-shadow:none!important}</style>"
-    )
     html_path.write_text(visual_html, encoding="utf-8")
 
     edge = _edge_executable()
     if edge is None:
         raise RuntimeError("No se encontró Microsoft Edge para renderizar el mail visual.")
     uri = html_path.resolve().as_uri()
-    # Alto amplio para evitar cortes. Edge captura exactamente el viewport.
+    routes_count = len(route_rows(planning_date, division))
+    novelties_count = len(novelty_rows(planning_date))
+    if division and division != "TODAS":
+        novelties_count = len([n for n in novelty_rows(planning_date) if canonical(n.get("division")) == canonical(division)])
+    viewport_height = max(1800, min(5600, 960 + routes_count * 85 + novelties_count * 75))
     command = [
         str(edge), "--headless", "--disable-gpu", "--hide-scrollbars",
         "--force-device-scale-factor=1",
-        "--window-size=1480,3600",
+        f"--window-size=1480,{viewport_height}",
         f"--screenshot={png_path}",
         uri,
     ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=60)
     if result.returncode != 0 or not png_path.exists():
         raise RuntimeError(result.stderr.strip() or "No se pudo renderizar la lámina del mail.")
+    return png_path
+
+
+def render_mail_top_image(planning_date: str, division: str = "TODAS") -> Path:
+    EXPORTS_DIR.mkdir(exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    html_path = EXPORTS_DIR / f"mail_top_{planning_date}_{stamp}.html"
+    png_path = EXPORTS_DIR / f"mail_top_{planning_date}_{stamp}.png"
+    html_path.write_text(planning_ddv_premium_top_html(planning_date, division), encoding="utf-8")
+
+    edge = _edge_executable()
+    if edge is None:
+        raise RuntimeError("No se encontrÃ³ Microsoft Edge para renderizar el encabezado del mail.")
+    command = [
+        str(edge),
+        "--headless",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--force-device-scale-factor=2",
+        "--window-size=1480,455",
+        f"--screenshot={png_path}",
+        html_path.resolve().as_uri(),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0 or not png_path.exists():
+        raise RuntimeError(result.stderr.strip() or "No se pudo renderizar el encabezado del mail.")
     return png_path
 
 
@@ -3516,7 +4206,7 @@ class Handler(BaseHTTPRequestHandler):
                         "server_platform": platform.system(),
                     })
                 elif path == "/api/mail/preview":
-                    body = report_html(query.get("date", ""), query.get("division", "TODAS"), logo_src="/assets/ddv_logo.png", include_novelties=True)
+                    body = mail_html(query.get("date", ""), query.get("division", "TODAS"), preview=True)
                     self.send_response(200)
                     raw = body.encode("utf-8")
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3637,7 +4327,7 @@ class Handler(BaseHTTPRequestHandler):
                     "server_platform": platform.system(),
                 })
             elif path == "/api/mail/preview":
-                body = report_html(query.get("date", ""), query.get("division", "TODAS"), logo_src="/assets/ddv_logo.png", include_novelties=True)
+                body = mail_html(query.get("date", ""), query.get("division", "TODAS"), preview=True)
                 self.send_response(200)
                 raw = body.encode("utf-8")
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -3654,7 +4344,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/pdf")
                 self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
                 self.send_header("Content-Length", str(len(raw)))
-                self.end_headers(); self.wfile.write(raw)
+                self.end_headers()
+                self.wfile.write(raw)
             elif path == "/api/export/mail.png":
                 d = query.get("date", "")
                 if not d:
