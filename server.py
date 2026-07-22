@@ -65,6 +65,10 @@ ROLE_BASES = {
     "CONSULTA": "TODAS",
 }
 FAILED_LOGINS: dict[str, list[float]] = {}
+OUTLOOK_PACKAGE_TTL_SECONDS = 5 * 60
+OUTLOOK_PACKAGES: dict[str, dict[str, Any]] = {}
+OUTLOOK_PACKAGES_LOCK = threading.Lock()
+CONNECTOR_DIR = APP_DIR / "connector"
 
 STORAGE_TABLES = [
     "planning_routes",
@@ -2574,8 +2578,15 @@ def mail_html(planning_date: str, division: str = "TODAS", preview: bool = False
     return outlook_mail_html(planning_date, division, preview)
 
 
+def asset_path(filename: str) -> Path:
+    for candidate in (WEB_DIR / "assets" / filename, APP_DIR / filename):
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(f"No se encontró el recurso {filename}.")
+
+
 def logo_data_uri() -> str:
-    logo_path = WEB_DIR / "assets" / "ddv_logo.png"
+    logo_path = asset_path("ddv_logo.png")
     data = base64.b64encode(logo_path.read_bytes()).decode("ascii")
     return f"data:image/png;base64,{data}"
 
@@ -2596,7 +2607,7 @@ def _pdf_truncate(text: Any, width: float, size: float) -> str:
 def build_pdf_bytes(planning_date: str, division: str = "TODAS") -> bytes:
     routes = route_rows(planning_date, division)
     display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
-    logo_bytes = (WEB_DIR / "assets" / "ddv_logo.jpg").read_bytes()
+    logo_bytes = asset_path("ddv_logo.jpg").read_bytes()
 
     PAGE_W, PAGE_H = 842.0, 595.0  # A4 landscape points
     MARGIN = 28.0
@@ -2844,6 +2855,109 @@ def generate_pdf(planning_date: str, division: str = "TODAS") -> Path:
     pdf_path = EXPORTS_DIR / f"salida_diaria_{planning_date}_{safe_div}.pdf"
     pdf_path.write_bytes(build_pdf_bytes(planning_date, division))
     return pdf_path
+
+
+def _attachment_from_bytes(
+    name: str,
+    content_type: str,
+    data: bytes,
+    cid: str = "",
+    inline: bool = False,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "content_type": content_type,
+        "content_base64": base64.b64encode(data).decode("ascii"),
+        "cid": cid,
+        "inline": inline,
+    }
+
+
+def _cleanup_outlook_packages() -> None:
+    now_ts = time.time()
+    with OUTLOOK_PACKAGES_LOCK:
+        expired = [token for token, package in OUTLOOK_PACKAGES.items() if package.get("expires_at", 0) <= now_ts]
+        for token in expired:
+            OUTLOOK_PACKAGES.pop(token, None)
+
+
+def _base_url_from_request(handler: BaseHTTPRequestHandler) -> str:
+    forwarded_proto = handler.headers.get("X-Forwarded-Proto", "")
+    proto = forwarded_proto.split(",")[0].strip() or ("https" if handler.headers.get("X-Forwarded-Host") else "http")
+    host = handler.headers.get("X-Forwarded-Host") or handler.headers.get("Host") or f"127.0.0.1:{PORT}"
+    return f"{proto}://{host}".rstrip("/")
+
+
+def create_outlook_connector_package(
+    payload: dict[str, Any],
+    user: dict[str, Any],
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, str]:
+    planning_date = str(payload.get("date") or "").strip()
+    if not planning_date:
+        raise ValueError("Debe seleccionar una fecha operativa.")
+    division = str(payload.get("division") or "TODAS").strip() or "TODAS"
+    require_base_access(user, division)
+    subject = str(payload.get("subject") or "").strip() or f"Salida diaria DDV - {datetime.fromisoformat(planning_date).strftime('%d/%m/%Y')}"
+    to = str(payload.get("to") or "Planning").strip() or "Planning"
+    cc = str(payload.get("cc") or "").strip()
+    html_body = mail_html(planning_date, division, preview=False)
+    attachments: list[dict[str, Any]] = []
+
+    try:
+        logo = asset_path("ddv_logo.png")
+        attachments.append(_attachment_from_bytes("ddv_logo.png", "image/png", logo.read_bytes(), cid="ddv_logo", inline=True))
+    except Exception:
+        pass
+
+    safe_div = re.sub(r"[^A-Z0-9]+", "_", canonical(division)).strip("_") or "TODAS"
+    pdf_name = f"salida_diaria_{planning_date}_{safe_div}.pdf"
+    attachments.append(_attachment_from_bytes(pdf_name, "application/pdf", build_pdf_bytes(planning_date, division)))
+
+    token = secrets.token_urlsafe(32)
+    now_ts = time.time()
+    _cleanup_outlook_packages()
+    with OUTLOOK_PACKAGES_LOCK:
+        OUTLOOK_PACKAGES[token] = {
+            "token": token,
+            "created_at": now_iso(),
+            "expires_at": now_ts + OUTLOOK_PACKAGE_TTL_SECONDS,
+            "created_by": user.get("username", ""),
+            "planning_date": planning_date,
+            "division": division,
+            "to": to,
+            "cc": cc,
+            "subject": subject,
+            "html_body": html_body,
+            "attachments": attachments,
+        }
+    return {
+        "token": token,
+        "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
+        "protocol_url": f"planningddv://mail?token={token}",
+        "package_url": f"{_base_url_from_request(handler)}/api/mail/package/{token}",
+    }
+
+
+def consume_outlook_connector_package(token: str) -> dict[str, Any] | None:
+    _cleanup_outlook_packages()
+    with OUTLOOK_PACKAGES_LOCK:
+        package = OUTLOOK_PACKAGES.pop(token, None)
+    if not package or package.get("expires_at", 0) <= time.time():
+        return None
+    package = dict(package)
+    package.pop("expires_at", None)
+    return package
+
+
+def connector_zip_bytes() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        if CONNECTOR_DIR.exists():
+            for path in CONNECTOR_DIR.rglob("*"):
+                if path.is_file():
+                    zf.write(path, path.relative_to(CONNECTOR_DIR).as_posix())
+    return output.getvalue()
 
 
 
@@ -3288,6 +3402,15 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path.lstrip("/")
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
+            elif path == "/downloads/planning_ddv_outlook_connector.zip":
+                raw = connector_zip_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", "attachment; filename=planning_ddv_outlook_connector.zip")
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(raw)
             elif path == "/api/health":
                 self.send_json({"ok": True, "status": "ready"})
             elif path == "/api/auth/me":
@@ -3306,6 +3429,13 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 else:
                     self.send_json({"authenticated": True, "user": user, "setup_required": False})
+            elif re.fullmatch(r"/api/mail/package/[A-Za-z0-9_-]+", path):
+                token = path.rsplit("/", 1)[-1]
+                package = consume_outlook_connector_package(token)
+                if not package:
+                    self.send_json({"error": "El paquete de mail venció o ya fue utilizado."}, 404)
+                else:
+                    self.send_json(package)
             elif path.startswith("/api/"):
                 user = require_login(self)
                 if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/audit", "/api/users", "/api/active-users", "/api/storage/diagnostics", "/api/diagnostics/storage"}:
@@ -3403,6 +3533,17 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header("Content-Type", "application/pdf")
                     self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/export/mail.png":
+                    d = query.get("date", "")
+                    if not d:
+                        raise ValueError("Debe seleccionar una fecha para generar la imagen.")
+                    png = render_mail_image(d, query.get("division", "TODAS"))
+                    raw = png.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Disposition", f"attachment; filename={png.name}")
                     self.send_header("Content-Length", str(len(raw)))
                     self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/backup/download":
@@ -3512,6 +3653,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/pdf")
                 self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers(); self.wfile.write(raw)
+            elif path == "/api/export/mail.png":
+                d = query.get("date", "")
+                if not d:
+                    raise ValueError("Debe seleccionar una fecha para generar la imagen.")
+                png = render_mail_image(d, query.get("division", "TODAS"))
+                raw = png.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Disposition", f"attachment; filename={png.name}")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers(); self.wfile.write(raw)
             elif path == "/api/backup/download":
@@ -3639,6 +3791,8 @@ class Handler(BaseHTTPRequestHandler):
                 open_history_mail(payload, payload.get("section", "routes"))
                 register_audit_event(None, user, "Generación mail histórico", "Histórico", payload.get("start", ""), payload.get("division", "TODAS"), ip_address=self.client_ip())
                 self.send_json({"ok": True})
+            elif path == "/api/mail/package":
+                self.send_json(create_outlook_connector_package(payload, user, self))
             elif path == "/api/mail/open":
                 planning_date = payload.get("date", "")
                 division = payload.get("division", "TODAS")
