@@ -33,6 +33,13 @@ from urllib.parse import parse_qs, quote, urlparse
 from xml.etree import ElementTree as ET
 
 try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:  # pragma: no cover - optional dependency checked at runtime.
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
+try:
     import psycopg  # type: ignore
 except Exception:  # pragma: no cover - optional unless PostgreSQL is configured.
     psycopg = None
@@ -2630,6 +2637,19 @@ def mail_logo_data_uri() -> str:
     return f"data:{content_type};base64,{encoded}"
 
 
+def _mail_metric_icon_svg(name: str) -> str:
+    icons = {
+        "fleet": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M4 7h11v8H4z'/><path d='M15 10h3.5l2 2.5V15H15z'/><circle cx='8' cy='17' r='2'/><circle cx='18' cy='17' r='2'/></svg>",
+        "used": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M3 8h12v7H3z'/><path d='M15 11h3.5l2 2.5V15H15z'/><circle cx='7' cy='17' r='2'/><circle cx='18' cy='17' r='2'/><path d='M6 5h8v2H6z'/></svg>",
+        "util": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M5 15a7 7 0 1 1 14 0'/><path d='M12 15l5-5'/><circle cx='12' cy='15' r='2'/></svg>",
+        "box": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M4 8l8-4 8 4-8 4z'/><path d='M4 8v8l8 4 8-4V8'/><path d='M12 12v8'/></svg>",
+        "store": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M4 10h16l-2-5H6z'/><path d='M5 10v9h14v-9'/><path d='M9 19v-5h6v5'/></svg>",
+        "target": "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='12' cy='12' r='8'/><circle cx='12' cy='12' r='4'/><circle cx='12' cy='12' r='1.5'/></svg>",
+        "base": "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 21s7-6.1 7-12a7 7 0 0 0-14 0c0 5.9 7 12 7 12z'/><circle cx='12' cy='9' r='2.5'/></svg>",
+    }
+    return icons.get(name, icons["fleet"])
+
+
 def planning_ddv_premium_visual_html(planning_date: str, division: str = "TODAS") -> str:
     routes = route_rows(planning_date, division)
     novelties = novelty_rows(planning_date)
@@ -2694,7 +2714,7 @@ def planning_ddv_premium_visual_html(planning_date: str, division: str = "TODAS"
         pm_w = min(100, max(2, pm_b / max_b * 100))
         return f"""
         <div class="kpi base-summary">
-          <div class="kpi-icon">TW</div>
+          <div class="kpi-icon">{_mail_metric_icon_svg("base")}</div>
           <div class="base-line"><b>TRELEW</b><span>{fmt(tw_b,1)}</span><i><em style="width:{tw_w:.1f}%"></em></i></div>
           <div class="base-line pm"><b>PTO. MADRYN</b><span>{fmt(pm_b,1)}</span><i><em style="width:{pm_w:.1f}%"></em></i></div>
           <div class="kpi-label">Resumen por base</div>
@@ -2755,21 +2775,26 @@ def planning_ddv_premium_visual_html(planning_date: str, division: str = "TODAS"
 
     novelty_html = ""
     if novelties:
-        novelty_rows_html = "".join(
-            "<tr>"
-            f"<td class='strong'>{esc(n.get('employee_name'))}</td>"
-            f"<td>{esc(n.get('division'))}</td>"
-            f"<td>{esc(n.get('role'))}</td>"
-            f"<td><span class='novelty-badge'>{esc(n.get('reason'))}</span></td>"
-            f"<td>{esc(n.get('notes'))}</td>"
-            "</tr>"
-            for n in novelties
-        )
+        novelty_rows_html_parts: list[str] = []
+        for n in novelties:
+            reason = esc(n.get("reason"))
+            notes = esc(n.get("notes"))
+            if notes == "-":
+                notes = "Sin detalle adicional"
+            novelty_rows_html_parts.append(f"""
+            <div class="novelty-card">
+              <div class="novelty-person"><b>{esc(n.get('employee_name'))}</b><span>{esc(n.get('division'))}</span></div>
+              <div class="novelty-role">{esc(n.get('role'))}</div>
+              <div class="novelty-reason"><span>{reason}</span></div>
+              <div class="novelty-notes">{notes}</div>
+            </div>""")
+        novelty_rows_html = "".join(novelty_rows_html_parts)
         novelty_html = f"""
         <section class="novelties">
           <div class="novelties-head"><h2>NOVEDADES DEL DÍA</h2><span>{len(novelties)} registros</span></div>
-          <table><thead><tr><th>Empleado</th><th>Base</th><th>Rol habilitado</th><th>Novedad</th><th>Detalle</th></tr></thead><tbody>{novelty_rows_html}</tbody></table>
+          <div class="novelties-body">{novelty_rows_html}</div>
         </section>"""
+
 
     sections = "".join(
         block for block in (
@@ -2788,24 +2813,24 @@ def planning_ddv_premium_visual_html(planning_date: str, division: str = "TODAS"
 .summary{{display:grid;grid-template-columns:.9fr .9fr 1fr 1fr .75fr .9fr 1.45fr;gap:1px;margin-top:16px;border:1px solid #2b5068;border-radius:14px;overflow:hidden;background:#2b5068}}
 .kpi{{min-height:128px;background:linear-gradient(145deg,#112f45,#071b29);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:10px}}
 .kpi.green{{background:linear-gradient(145deg,#113f24,#082719)}}.kpi.gold{{background:linear-gradient(145deg,#49370a,#251d08)}}.kpi.cyan{{background:linear-gradient(145deg,#093d49,#061f2a)}}
-.kpi-icon{{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.08);font-size:20px;font-weight:900;color:#9feaff;margin-bottom:7px}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
+.kpi-icon{{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.08);color:#9feaff;margin-bottom:7px}}.kpi-icon svg{{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
 .kpi-value{{font-size:36px;line-height:40px;font-weight:900;color:#fff}}.kpi-label{{font-size:12px;line-height:15px;text-transform:uppercase;color:#d3e4ef;font-weight:900;letter-spacing:.45px}}.kpi-detail{{font-size:12px;color:#86a4b7;margin-top:5px}}
 .base-summary{{align-items:stretch;padding:12px 14px}}.base-summary .kpi-icon{{margin:0 auto 8px}}.base-line{{display:grid;grid-template-columns:76px 74px 1fr;gap:8px;align-items:center;color:#d7e8f1;font-size:11px;margin:4px 0}}.base-line span{{text-align:right;font-weight:900;color:#fff}}.base-line i{{height:9px;background:#16384d;border:1px solid #355b70;border-radius:8px;overflow:hidden}}.base-line em{{display:block;height:100%;background:linear-gradient(90deg,#41c931,#9df174)}}.base-line.pm em{{background:linear-gradient(90deg,#1187d7,#5cc8ff)}}
 .base{{margin-top:18px;border:1px solid;border-radius:14px;overflow:hidden;background:#071b29}}.base.tw{{border-color:#35962f}}.base.pm{{border-color:#1681d1}}.base-head{{display:flex;justify-content:space-between;align-items:center;padding:17px 22px}}.tw .base-head{{background:linear-gradient(90deg,#17631b,#0c3517)}}.pm .base-head{{background:linear-gradient(90deg,#075fa6,#073458)}}.base-head h2{{margin:0;font-size:30px;letter-spacing:.5px}}.base-head span{{background:rgba(255,255,255,.13);padding:8px 14px;border-radius:20px;font-size:14px;font-weight:900}}
 .base-kpis{{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;padding:16px}}.base-kpis>div{{min-height:112px;border:1px solid;border-radius:12px;display:grid;place-items:center;align-content:center;text-align:center;padding:10px}}.tw .base-kpis>div{{background:linear-gradient(145deg,#123c24,#09291a);border-color:#2d7136}}.pm .base-kpis>div{{background:linear-gradient(145deg,#0d3154,#081f37);border-color:#245e95}}.base-kpis b{{font-size:33px;line-height:38px}}.base-kpis small{{font-size:12px;text-transform:uppercase;color:#c2d3de;font-weight:900;letter-spacing:.3px}}
 .table-title,.cyo-title{{margin:4px 16px 9px;color:#d7e9f4;font-size:13px;font-weight:900;text-transform:uppercase;letter-spacing:.6px}}.cyo-title{{margin-top:18px;color:#ffc04b}}
 table{{width:calc(100% - 32px);margin:0 16px 16px;border-collapse:collapse;font-size:13px;border:1px solid #24465d}}th{{padding:11px 10px;text-align:left;text-transform:uppercase;color:#fff;font-size:12px;letter-spacing:.3px;background:#123c58}}td{{padding:10px;border-top:1px solid #17394d;color:#eef6fb}}tr:nth-child(even) td{{background:#0a2232}}.strong{{font-weight:900;color:#fff}}.num{{text-align:right}}.empty-section{{margin:0 16px 16px;padding:18px;border:1px solid #24465d;color:#91a9b8}}
-.novelties{{margin-top:18px;border:1px solid #d49a21;border-radius:14px;overflow:hidden;background:#101e28}}.novelties-head{{display:flex;justify-content:space-between;align-items:center;padding:15px 20px;background:linear-gradient(90deg,#6d4800,#2b2514)}}.novelties-head h2{{margin:0;font-size:23px;color:#ffd56a}}.novelties-head span{{background:rgba(255,213,106,.14);border:1px solid rgba(255,213,106,.35);padding:7px 13px;border-radius:18px;color:#ffe5a3;font-size:13px;font-weight:900}}.novelties th{{background:#8a5b00;color:#fff4d0}}.novelty-badge{{display:inline-block;padding:5px 10px;border-radius:14px;background:#fff1cc;color:#8f5b00;font-weight:900;font-size:12px}}
+.novelties{{margin-top:18px;border:1px solid #31546b;border-radius:14px;overflow:hidden;background:#071b29}}.novelties-head{{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;background:linear-gradient(90deg,#0f2f57,#0b2536);border-bottom:4px solid #f1ae17}}.novelties-head h2{{margin:0;font-size:24px;color:#fff}}.novelties-head span{{background:rgba(220,234,243,.12);border:1px solid rgba(220,234,243,.25);padding:7px 13px;border-radius:18px;color:#dceaf3;font-size:13px;font-weight:900}}.novelties-body{{padding:14px 16px 4px}}.novelty-card{{display:grid;grid-template-columns:1.35fr .9fr .65fr 1.75fr;gap:12px;align-items:center;background:#0b2536;border:1px solid #31546b;border-radius:10px;padding:13px 15px;margin-bottom:10px}}.novelty-person b{{display:block;color:#fff;font-size:15px}}.novelty-person span{{display:block;color:#91a9b8;font-size:11px;font-weight:900;text-transform:uppercase;margin-top:3px}}.novelty-role{{color:#d7e9f4;font-weight:800;font-size:13px}}.novelty-reason span{{display:inline-block;padding:6px 12px;border-radius:18px;background:#ffd56a;color:#372600;font-size:12px;font-weight:900;text-transform:uppercase}}.novelty-notes{{color:#dceaf3;font-size:13px;line-height:18px}}
 .foot{{margin-top:16px;padding:15px 18px;border:1px solid #29495e;border-radius:10px;color:#91a9b8;font-size:12px;display:flex;justify-content:space-between}}
 </style></head><body><div class="mail">
 <div class="hero"><div class="date"><small>Fecha operativa</small><b>{display_date}</b><em>{esc(division_label)}</em></div></div>
 <div class="summary">
-{kpi("Flota total", str(flota_total), "TW 6 + PM 5", "FT")}
-{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignación", "FU", "green")}
-{kpi("Utilización de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", "UF", "gold")}
-{kpi("Bultos a repartir", fmt(valley_total["bultos"],1), "Sin CYO", "BL")}
-{kpi("PDV", fmt(valley_total["pdv"]), "Total del día", "PDV", "cyan")}
-{kpi("Drop size", fmt(valley_total["drop"],1), "Bultos / PDV", "DS")}
+{kpi("Flota total", str(flota_total), "TW 6 + PM 5", _mail_metric_icon_svg("fleet"))}
+{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignación", _mail_metric_icon_svg("used"), "green")}
+{kpi("Utilización de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", _mail_metric_icon_svg("util"), "gold")}
+{kpi("Bultos a repartir", fmt(valley_total["bultos"],1), "Sin CYO", _mail_metric_icon_svg("box"))}
+{kpi("PDV", fmt(valley_total["pdv"]), "Total del día", _mail_metric_icon_svg("store"), "cyan")}
+{kpi("Drop size", fmt(valley_total["drop"],1), "Bultos / PDV", _mail_metric_icon_svg("target"))}
 {base_chart()}
 </div>
 {sections}
@@ -2876,7 +2901,7 @@ def planning_ddv_premium_top_html(planning_date: str, division: str = "TODAS") -
     pm_w = min(100, max(2, pm_b / max_b * 100))
     base_summary = f"""
     <div class="kpi base-summary">
-      <div class="kpi-icon">TW</div>
+          <div class="kpi-icon">{_mail_metric_icon_svg("base")}</div>
       <div class="base-line"><b>TRELEW</b><span>{fmt(tw_b,1)}</span><i><em style="width:{tw_w:.1f}%"></em></i></div>
       <div class="base-line pm"><b>PTO. MADRYN</b><span>{fmt(pm_b,1)}</span><i><em style="width:{pm_w:.1f}%"></em></i></div>
       <div class="kpi-label">Resumen por base</div>
@@ -2892,18 +2917,18 @@ def planning_ddv_premium_top_html(planning_date: str, division: str = "TODAS") -
 .summary{{display:grid;grid-template-columns:.9fr .9fr 1fr 1fr .75fr .9fr 1.45fr;gap:1px;margin-top:16px;border:1px solid #2b5068;border-radius:15px;overflow:hidden;background:#2b5068}}
 .kpi{{min-height:142px;background:linear-gradient(145deg,#112f45,#071b29);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:12px}}
 .kpi.green{{background:linear-gradient(145deg,#113f24,#082719)}}.kpi.gold{{background:linear-gradient(145deg,#49370a,#251d08)}}.kpi.cyan{{background:linear-gradient(145deg,#093d49,#061f2a)}}
-.kpi-icon{{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.09);font-size:22px;font-weight:900;color:#9feaff;margin-bottom:8px}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
+.kpi-icon{{width:48px;height:48px;border-radius:50%;display:grid;place-items:center;background:rgba(255,255,255,.09);color:#9feaff;margin-bottom:8px}}.kpi-icon svg{{width:29px;height:29px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}}.green .kpi-icon{{color:#6ee35a}}.gold .kpi-icon{{color:#ffc847}}.cyan .kpi-icon{{color:#4bd5ef}}
 .kpi-value{{font-size:40px;line-height:44px;font-weight:900;color:#fff}}.kpi-label{{font-size:15px;line-height:18px;text-transform:uppercase;color:#d3e4ef;font-weight:900;letter-spacing:.45px}}.kpi-detail{{font-size:13px;color:#86a4b7;margin-top:6px}}
 .base-summary{{align-items:stretch;padding:14px 15px}}.base-summary .kpi-icon{{margin:0 auto 9px}}.base-line{{display:grid;grid-template-columns:86px 82px 1fr;gap:9px;align-items:center;color:#d7e8f1;font-size:13px;margin:5px 0}}.base-line span{{text-align:right;font-weight:900;color:#fff}}.base-line i{{height:11px;background:#16384d;border:1px solid #355b70;border-radius:9px;overflow:hidden}}.base-line em{{display:block;height:100%;background:linear-gradient(90deg,#41c931,#9df174)}}.base-line.pm em{{background:linear-gradient(90deg,#1187d7,#5cc8ff)}}
 </style></head><body><div class="top">
 <div class="hero"><div class="date"><small>Fecha operativa</small><b>{display_date}</b><em>{html.escape(division_label)}</em></div></div>
 <div class="summary">
-{kpi("Flota total", str(flota_total), "TW 6 + PM 5", "FT")}
-{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignacion", "FU", "green")}
-{kpi("Utilizacion de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", "UF", "gold")}
-{kpi("Bultos a repartir", fmt(valley["bultos"],1), "Sin CYO", "BL")}
-{kpi("PDV", fmt(valley["pdv"]), "Total del dia", "PDV", "cyan")}
-{kpi("Drop size", fmt(valley["drop"],1), "Bultos / PDV", "DS")}
+{kpi("Flota total", str(flota_total), "TW 6 + PM 5", _mail_metric_icon_svg("fleet"))}
+{kpi("Flota utilizada", fmt(flota_usada), f"{max(flota_total-flota_usada,0)} sin asignacion", _mail_metric_icon_svg("used"), "green")}
+{kpi("Utilizacion de flota", f"{fmt(util_total,1)}%", "Sobre 11 unidades", _mail_metric_icon_svg("util"), "gold")}
+{kpi("Bultos a repartir", fmt(valley["bultos"],1), "Sin CYO", _mail_metric_icon_svg("box"))}
+{kpi("PDV", fmt(valley["pdv"]), "Total del dia", _mail_metric_icon_svg("store"), "cyan")}
+{kpi("Drop size", fmt(valley["drop"],1), "Bultos / PDV", _mail_metric_icon_svg("target"))}
 {base_summary}
 </div></div></body></html>"""
 
@@ -3021,24 +3046,46 @@ def planning_ddv_outlook_hybrid_html(planning_date: str, division: str = "TODAS"
 
     novelty_html = ""
     if novelties:
-        novelty_rows_html = "".join(
-            "<tr>"
-            f"<td width='280' style='width:280px;font-weight:800;color:#ffffff;'>{esc(n.get('employee_name'))}</td>"
-            f"<td width='180' style='width:180px;'>{esc(n.get('division'))}</td>"
-            f"<td width='200' style='width:200px;'>{esc(n.get('role'))}</td>"
-            f"<td width='210' style='width:210px;font-weight:800;color:#ffd56a;'>{esc(n.get('reason'))}</td>"
-            f"<td width='578' style='width:578px;'>{esc(n.get('notes'))}</td>"
-            "</tr>"
-            for n in novelties
-        )
+        novelty_rows_html_parts: list[str] = []
+        for n in novelties:
+            reason = esc(n.get("reason"))
+            notes = esc(n.get("notes"))
+            if notes == "-":
+                notes = "Sin detalle adicional"
+            novelty_rows_html_parts.append(f"""
+            <tr>
+              <td style="padding:0 18px 12px 18px;">
+                <table role="presentation" width="1412" cellpadding="0" cellspacing="0" border="0" style="width:1412px;border-collapse:collapse;background:#0b2536;border:1px solid #31546b;">
+                  <tr>
+                    <td width="380" valign="top" style="width:380px;padding:15px 16px;font-size:17px;line-height:23px;font-weight:900;color:#ffffff;">
+                      {esc(n.get('employee_name'))}
+                      <div style="font-size:12px;line-height:17px;font-weight:800;color:#91a9b8;text-transform:uppercase;margin-top:3px;">{esc(n.get('division'))}</div>
+                    </td>
+                    <td width="250" valign="middle" style="width:250px;padding:15px 12px;font-size:14px;line-height:20px;font-weight:800;color:#d7e9f4;">
+                      {esc(n.get('role'))}
+                    </td>
+                    <td width="190" valign="middle" style="width:190px;padding:15px 12px;">
+                      <span style="display:inline-block;padding:7px 13px;border-radius:18px;background:#ffd56a;color:#372600;font-size:14px;line-height:18px;font-weight:900;text-transform:uppercase;">{reason}</span>
+                    </td>
+                    <td width="592" valign="middle" style="width:592px;padding:15px 16px;font-size:15px;line-height:21px;color:#dceaf3;">
+                      {notes}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>""")
+        novelty_rows_html = "".join(novelty_rows_html_parts)
         novelty_html = f"""
         <tr><td style="padding:18px 0 0 0;">
-          <table role="presentation" width="1480" cellpadding="0" cellspacing="0" border="0" style="width:1480px;border-collapse:collapse;border:1px solid #d49a21;background:#101e28;">
-            <tr><td style="padding:17px 22px;background:#6d4800;font-size:25px;line-height:31px;font-weight:900;color:#ffd56a;">NOVEDADES DEL DIA</td><td align="right" style="padding:17px 22px;background:#2b2514;font-size:15px;color:#ffe5a3;font-weight:900;">{len(novelties)} registros</td></tr>
-            <tr><td colspan="2" style="padding:0 16px 18px 16px;">
-              <table role="presentation" width="1448" cellpadding="0" cellspacing="0" border="0" style="width:1448px;table-layout:fixed;border-collapse:collapse;border:1px solid #725821;background:#122633;">
-                <thead><tr><th width="280" style="width:280px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Empleado</th><th width="180" style="width:180px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Base</th><th width="200" style="width:200px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Rol habilitado</th><th width="210" style="width:210px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Novedad</th><th width="578" style="width:578px;padding:12px 10px;text-align:left;font-size:15px;line-height:19px;text-transform:uppercase;color:#fff4d0;background:#8a5b00;">Detalle</th></tr></thead>
-                <tbody>{novelty_rows_html}</tbody>
+          <table role="presentation" width="1480" cellpadding="0" cellspacing="0" border="0" style="width:1480px;border-collapse:collapse;border:1px solid #31546b;background:#071b29;">
+            <tr>
+              <td style="padding:18px 22px;background:#0f2f57;font-size:26px;line-height:32px;font-weight:900;color:#ffffff;">NOVEDADES DEL DÍA</td>
+              <td align="right" style="padding:18px 22px;background:#0b2536;font-size:15px;line-height:20px;color:#dceaf3;font-weight:900;">{len(novelties)} registros</td>
+            </tr>
+            <tr><td colspan="2" style="height:4px;line-height:4px;background:#f1ae17;font-size:1px;">&nbsp;</td></tr>
+            <tr><td colspan="2" style="padding:18px 16px 8px 16px;">
+              <table role="presentation" width="1448" cellpadding="0" cellspacing="0" border="0" style="width:1448px;border-collapse:collapse;">
+                {novelty_rows_html}
               </table>
             </td></tr>
           </table>
@@ -3670,31 +3717,153 @@ def render_mail_image(planning_date: str, division: str = "TODAS") -> Path:
     return png_path
 
 
+def _load_pil_font(size: int, bold: bool = False):
+    if ImageFont is None:
+        raise RuntimeError("Pillow no está disponible para generar el encabezado del mail.")
+    candidates = [
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts" / ("arialbd.ttf" if bold else "arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return ImageFont.truetype(str(candidate), size)
+    return ImageFont.load_default()
+
+
+def _draw_mail_top_png(planning_date: str, division: str, png_path: Path) -> None:
+    if Image is None or ImageDraw is None:
+        raise RuntimeError("Pillow no está disponible para generar el encabezado del mail.")
+
+    scale = 2
+    width, height = 1480 * scale, 455 * scale
+    hero_height = 260 * scale
+    margin = 24 * scale
+    gap = 14 * scale
+    bg = "#061522"
+    border = "#2b5068"
+    muted = "#bdd0dd"
+    subtle = "#7fa1b5"
+    gold = "#ffc22d"
+
+    routes = route_rows(planning_date, division)
+    display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
+    division_label = "TW + PM" if not division or division == "TODAS" else display_division(division)
+    operational = [r for r in routes if not is_cyo_route(r)]
+    total_pdv = sum(safe_number(r.get("pdv")) for r in operational)
+    total_bultos = sum(safe_number(r.get("bultos")) for r in operational)
+    used = len(operational)
+    util_total = used / 11 * 100 if 11 else 0
+    drop_total = total_bultos / total_pdv if total_pdv else 0
+    tw_rows = [r for r in routes if canonical(r.get("division")) == "TRELEW" and not is_cyo_route(r)]
+    pm_rows = [r for r in routes if canonical(r.get("division")) == "PUERTO MADRYN" and not is_cyo_route(r)]
+    tw_bultos = sum(safe_number(r.get("bultos")) for r in tw_rows)
+    pm_bultos = sum(safe_number(r.get("bultos")) for r in pm_rows)
+
+    canvas = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(canvas)
+    hero_path = WEB_DIR / "assets" / "hero_banner_v35.png"
+    if hero_path.exists():
+        hero = Image.open(hero_path).convert("RGB").resize((width, hero_height), Image.Resampling.LANCZOS)
+        canvas.paste(hero, (0, 0))
+    else:
+        draw.rectangle((0, 0, width, hero_height), fill="#0F2F57")
+
+    overlay = Image.new("RGBA", (width, hero_height), (4, 18, 29, 34))
+    hero_rgba = canvas.crop((0, 0, width, hero_height)).convert("RGBA")
+    canvas.paste(Image.alpha_composite(hero_rgba, overlay).convert("RGB"), (0, 0))
+
+    font_title = _load_pil_font(38 * scale, True)
+    font_sub = _load_pil_font(18 * scale, True)
+    font_label = _load_pil_font(13 * scale, True)
+    font_date = _load_pil_font(30 * scale, True)
+    font_kpi_label = _load_pil_font(13 * scale, True)
+    font_kpi_sub = _load_pil_font(12 * scale, False)
+
+    date_box = (width - 306 * scale, 22 * scale, width - 24 * scale, 116 * scale)
+    draw.rounded_rectangle(date_box, radius=12 * scale, fill="#04121d", outline="#36596f", width=2 * scale)
+    draw.text((date_box[0] + 18 * scale, date_box[1] + 15 * scale), "FECHA OPERATIVA", font=font_label, fill="#a8bdca")
+    draw.text((date_box[0] + 18 * scale, date_box[1] + 44 * scale), display_date, font=font_date, fill="#ffffff")
+    div_box = (width - 306 * scale, 130 * scale, width - 24 * scale, 188 * scale)
+    draw.rounded_rectangle(div_box, radius=12 * scale, fill="#04121d", outline="#36596f", width=2 * scale)
+    draw.text((div_box[0] + 18 * scale, div_box[1] + 16 * scale), f"DIVISIÓN: {division_label}", font=font_sub, fill="#ffffff")
+
+    draw.text((margin, hero_height - 72 * scale), "SALIDA DIARIA DDV", font=font_title, fill="#ffffff")
+    draw.text((margin, hero_height - 31 * scale), "Reporte operativo para Outlook", font=font_sub, fill="#dceaf3")
+
+    summary_top = hero_height + 16 * scale
+    summary_left = margin
+    summary_right = width - margin
+    summary_height = 150 * scale
+    draw.rounded_rectangle((summary_left, summary_top, summary_right, summary_top + summary_height), radius=14 * scale, fill="#0a2233", outline=border, width=2 * scale)
+
+    def draw_icon(name: str, cx: int, cy: int, color: str) -> None:
+        r = 28 * scale
+        sw = 4 * scale
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill="#17364a", outline="#254e66", width=2 * scale)
+        if name in {"fleet", "used"}:
+            draw.rectangle((cx - 19 * scale, cy - 7 * scale, cx + 8 * scale, cy + 8 * scale), outline=color, width=sw)
+            draw.polygon([(cx + 8 * scale, cy - 2 * scale), (cx + 18 * scale, cy - 2 * scale), (cx + 23 * scale, cy + 8 * scale), (cx + 8 * scale, cy + 8 * scale)], outline=color)
+            draw.ellipse((cx - 16 * scale, cy + 9 * scale, cx - 7 * scale, cy + 18 * scale), outline=color, width=sw)
+            draw.ellipse((cx + 13 * scale, cy + 9 * scale, cx + 22 * scale, cy + 18 * scale), outline=color, width=sw)
+            if name == "used":
+                draw.line((cx - 10 * scale, cy - 16 * scale, cx + 8 * scale, cy - 16 * scale), fill=color, width=sw)
+        elif name == "util":
+            draw.arc((cx - 20 * scale, cy - 17 * scale, cx + 20 * scale, cy + 23 * scale), 200, 340, fill=color, width=sw)
+            draw.line((cx, cy + 7 * scale, cx + 14 * scale, cy - 10 * scale), fill=color, width=sw)
+            draw.ellipse((cx - 5 * scale, cy + 2 * scale, cx + 5 * scale, cy + 12 * scale), fill=color)
+        elif name == "box":
+            draw.polygon([(cx, cy - 20 * scale), (cx + 19 * scale, cy - 9 * scale), (cx, cy + 2 * scale), (cx - 19 * scale, cy - 9 * scale)], outline=color)
+            draw.line((cx - 19 * scale, cy - 9 * scale, cx - 19 * scale, cy + 12 * scale, cx, cy + 23 * scale, cx + 19 * scale, cy + 12 * scale, cx + 19 * scale, cy - 9 * scale), fill=color, width=sw)
+            draw.line((cx, cy + 2 * scale, cx, cy + 23 * scale), fill=color, width=sw)
+        elif name == "store":
+            draw.rectangle((cx - 17 * scale, cy - 3 * scale, cx + 17 * scale, cy + 20 * scale), outline=color, width=sw)
+            draw.polygon([(cx - 21 * scale, cy - 3 * scale), (cx + 21 * scale, cy - 3 * scale), (cx + 14 * scale, cy - 18 * scale), (cx - 14 * scale, cy - 18 * scale)], outline=color)
+            draw.rectangle((cx - 7 * scale, cy + 5 * scale, cx + 7 * scale, cy + 20 * scale), outline=color, width=sw)
+        elif name == "target":
+            draw.ellipse((cx - 19 * scale, cy - 19 * scale, cx + 19 * scale, cy + 19 * scale), outline=color, width=sw)
+            draw.ellipse((cx - 10 * scale, cy - 10 * scale, cx + 10 * scale, cy + 10 * scale), outline=color, width=sw)
+            draw.ellipse((cx - 3 * scale, cy - 3 * scale, cx + 3 * scale, cy + 3 * scale), fill=color)
+        else:
+            draw.polygon([(cx, cy + 22 * scale), (cx - 16 * scale, cy - 2 * scale), (cx, cy - 20 * scale), (cx + 16 * scale, cy - 2 * scale)], outline=color)
+            draw.ellipse((cx - 6 * scale, cy - 7 * scale, cx + 6 * scale, cy + 5 * scale), fill=color)
+
+    cards = [
+        ("fleet", "11", "FLOTA TOTAL", "TW 6 + PM 5", "#e9f5ff"),
+        ("used", _fmt_ar(used), "FLOTA UTILIZADA", f"{max(11 - used, 0)} sin asignación", "#e9f5ff"),
+        ("util", f"{_fmt_ar(util_total, 1)}%", "UTILIZACIÓN FLOTA", "Sobre 11 unidades", gold),
+        ("box", _fmt_ar(total_bultos, 1), "BULTOS A REPARTIR", "Sin CYO", "#e9f5ff"),
+        ("store", _fmt_ar(total_pdv), "PDV", "Total del día", "#e9f5ff"),
+        ("target", _fmt_ar(drop_total, 1), "DROP SIZE", "Bultos / PDV", "#e9f5ff"),
+        ("base", f"TW {len(tw_rows)} / PM {len(pm_rows)}", "RESUMEN POR BASE", f"{_fmt_ar(tw_bultos, 1)} / {_fmt_ar(pm_bultos, 1)} bultos", "#e9f5ff"),
+    ]
+    card_w = (summary_right - summary_left - gap * (len(cards) - 1)) // len(cards)
+    def center_text(x0: int, x1: int, y: int, value: str, font: Any, fill: str) -> None:
+        bbox = draw.textbbox((0, 0), value, font=font)
+        tw = bbox[2] - bbox[0]
+        draw.text((x0 + (x1 - x0 - tw) / 2, y), value, font=font, fill=fill)
+
+    for idx, (icon_name, value, label, subtitle, color) in enumerate(cards):
+        x0 = summary_left + idx * (card_w + gap)
+        x1 = x0 + card_w
+        draw.rounded_rectangle((x0, summary_top, x1, summary_top + summary_height), radius=12 * scale, fill="#0d2a3d", outline="#2d526a", width=2 * scale)
+        draw_icon(icon_name, x0 + (x1 - x0) // 2, summary_top + 37 * scale, color)
+        value_font = _load_pil_font(22 * scale if idx == 6 else 34 * scale, True)
+        center_text(x0, x1, summary_top + 72 * scale, value, value_font, color)
+        center_text(x0, x1, summary_top + 112 * scale, label, font_kpi_label, muted)
+        center_text(x0, x1, summary_top + 130 * scale, subtitle, font_kpi_sub, subtle)
+
+    canvas.save(png_path, "PNG", optimize=True)
+
+
 def render_mail_top_image(planning_date: str, division: str = "TODAS") -> Path:
     EXPORTS_DIR.mkdir(exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    html_path = EXPORTS_DIR / f"mail_top_{planning_date}_{stamp}.html"
     png_path = EXPORTS_DIR / f"mail_top_{planning_date}_{stamp}.png"
-    html_path.write_text(planning_ddv_premium_top_html(planning_date, division), encoding="utf-8")
-
-    edge = _edge_executable()
-    if edge is None:
-        raise RuntimeError("No se encontrÃ³ Microsoft Edge para renderizar el encabezado del mail.")
-    command = [
-        str(edge),
-        "--headless",
-        "--disable-gpu",
-        "--hide-scrollbars",
-        "--force-device-scale-factor=2",
-        "--window-size=1480,455",
-        f"--screenshot={png_path}",
-        html_path.resolve().as_uri(),
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0 or not png_path.exists():
-        raise RuntimeError(result.stderr.strip() or "No se pudo renderizar el encabezado del mail.")
+    _draw_mail_top_png(planning_date, division, png_path)
+    if not png_path.exists() or png_path.stat().st_size <= 0:
+        raise RuntimeError("No se pudo generar el encabezado del mail.")
     return png_path
-
 
 def open_outlook_visual_draft(
     to: str,
