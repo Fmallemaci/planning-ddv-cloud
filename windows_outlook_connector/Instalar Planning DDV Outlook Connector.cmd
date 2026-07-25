@@ -31,6 +31,9 @@ if errorlevel 1 goto :error
 copy /Y "%~dp0run_connector.cmd" "%INSTALL_DIR%\run_connector.cmd" >nul
 if errorlevel 1 goto :error
 copy /Y "%~dp0README_CONNECTOR.md" "%INSTALL_DIR%\README_CONNECTOR.md" >nul
+copy /Y "%~dp0PRUEBA_APERTURA_BORRADOR.md" "%INSTALL_DIR%\PRUEBA_APERTURA_BORRADOR.md" >nul
+copy /Y "%~dp0Registrar protocolo planningddv.cmd" "%INSTALL_DIR%\Registrar protocolo planningddv.cmd" >nul
+copy /Y "%~dp0Desinstalar Planning DDV Outlook Connector.cmd" "%INSTALL_DIR%\Desinstalar Planning DDV Outlook Connector.cmd" >nul
 copy /Y "%~dp0SHA256SUMS.txt" "%INSTALL_DIR%\SHA256SUMS.txt" >nul
 
 > "%INSTALL_DIR%\version.txt" echo %CONNECTOR_VERSION%
@@ -38,11 +41,7 @@ copy /Y "%~dp0SHA256SUMS.txt" "%INSTALL_DIR%\SHA256SUMS.txt" >nul
 
 echo.
 echo Registrando protocolo planningddv:// para el usuario actual...
-reg add "HKCU\Software\Classes\planningddv" /ve /d "URL:Planning DDV Outlook Connector" /f
-if errorlevel 1 goto :error
-reg add "HKCU\Software\Classes\planningddv" /v "URL Protocol" /d "" /f
-if errorlevel 1 goto :error
-reg add "HKCU\Software\Classes\planningddv\shell\open\command" /ve /d "\"%INSTALL_DIR%\run_connector.cmd\" \"%%1\"" /f
+call "%INSTALL_DIR%\Registrar protocolo planningddv.cmd"
 if errorlevel 1 goto :error
 
 echo.

@@ -72,10 +72,13 @@ ROLE_BASES = {
     "CONSULTA": "TODAS",
 }
 FAILED_LOGINS: dict[str, list[float]] = {}
-OUTLOOK_PACKAGE_TTL_SECONDS = 5 * 60
+OUTLOOK_PACKAGE_TTL_SECONDS = 10 * 60
 OUTLOOK_PACKAGES: dict[str, dict[str, Any]] = {}
 OUTLOOK_PACKAGES_LOCK = threading.Lock()
-CONNECTOR_DIR = APP_DIR / "connector"
+CONNECTOR_DIR = APP_DIR / "windows_outlook_connector"
+WEB_APP_VERSION = "1.0.0"
+REQUIRED_CONNECTOR_VERSION = "1.0.0"
+DEFAULT_PUBLIC_BASE_URL = os.environ.get("PLANNING_DDV_PUBLIC_URL", "https://planning-ddv-usuarios-prueba.onrender.com").strip().rstrip("/")
 
 STORAGE_TABLES = [
     "planning_routes",
@@ -1337,9 +1340,9 @@ def route_rows(planning_date: str, division: str = "") -> list[dict[str, Any]]:
         query += f" AND {PG_ROUTE_EFFECTIVE_DIVISION if postgres_enabled() else 'pr.division'}=?"
         params.append(route_division_for_db(division))
     if postgres_enabled():
-        query += f" ORDER BY CASE WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 1 WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+        query += f" ORDER BY CASE WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'TW' THEN 1 WHEN ({PG_ROUTE_EFFECTIVE_DIVISION}) = 'PM' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
     else:
-        query += " ORDER BY CASE pr.division WHEN 'PM' THEN 1 WHEN 'PUERTO MADRYN' THEN 1 WHEN 'TW' THEN 2 WHEN 'TRELEW' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
+        query += " ORDER BY CASE pr.division WHEN 'TW' THEN 1 WHEN 'TRELEW' THEN 1 WHEN 'PM' THEN 2 WHEN 'PUERTO MADRYN' THEN 2 ELSE 3 END, locality_order, pr.domain, pr.domain_seq"
     with db() as con:
         return [normalize_route_output(dict(r)) for r in con.execute(query, params).fetchall()]
 
@@ -1421,7 +1424,12 @@ def options_for_routes(planning_date: str) -> dict[str, Any]:
             "novelty_names": sorted(novelty_names)}
 
 
-def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confirm: bool = False) -> list[str]:
+def validate_assignments(
+    planning_date: str,
+    routes: list[dict[str, Any]],
+    confirm: bool = False,
+    allow_novelty_conflicts: bool = False,
+) -> list[str]:
     errors: list[str] = []
     # Regla operativa:
     # - La misma formación puede repetirse en otro camión durante la misma fecha.
@@ -1455,7 +1463,7 @@ def validate_assignments(planning_date: str, routes: list[dict[str, Any]], confi
             name = canonical(route.get(field))
             if not name:
                 continue
-            if name in novelty_names:
+            if not allow_novelty_conflicts and name in novelty_names:
                 errors.append(f"{name} tiene una novedad cargada para {planning_date} y no puede asignarse.")
 
             previous_slot = names_in_route.get(name)
@@ -1559,7 +1567,16 @@ def sync_recargas(con: sqlite3.Connection, route_id: int) -> None:
         )
 
 
-def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool, division: str = "TODAS") -> None:
+def save_routes(
+    planning_date: str,
+    routes: list[dict[str, Any]],
+    confirm: bool,
+    division: str = "TODAS",
+    edit_existing: bool = False,
+    reason: str = "",
+    user: dict[str, Any] | None = None,
+    ip_address: str = "",
+) -> None:
     if not routes:
         raise ValueError("No hay salidas para guardar en la división seleccionada.")
 
@@ -1578,11 +1595,11 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
         else:
             merged.append(row)
 
-    errors = validate_assignments(planning_date, merged, confirm=False)
+    errors = validate_assignments(planning_date, merged, confirm=False, allow_novelty_conflicts=edit_existing)
     if confirm:
         selected_ids = set(incoming)
         selected_rows = [r for r in merged if str(r.get("id") or "").strip() in selected_ids]
-        errors.extend(validate_assignments(planning_date, selected_rows, confirm=True))
+        errors.extend(validate_assignments(planning_date, selected_rows, confirm=True, allow_novelty_conflicts=edit_existing))
     errors = list(dict.fromkeys(errors))
     if errors:
         raise ValueError("\n".join(errors))
@@ -1594,13 +1611,30 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
             if not route_id:
                 continue
             existing = con.execute(
-                "SELECT division FROM planning_routes WHERE id=? AND planning_date=?",
+                "SELECT * FROM planning_routes WHERE id=? AND planning_date=?",
                 (route_id, planning_date),
             ).fetchone()
             if not existing:
                 continue
-            if allowed_division not in ("", "TODAS") and display_division(existing["division"]) != display_division(allowed_division):
+            previous = normalize_route_output(dict(existing))
+            if allowed_division not in ("", "TODAS") and display_division(previous["division"]) != display_division(allowed_division):
                 continue
+            next_status = str(previous.get("status") or "BORRADOR")
+            if not edit_existing:
+                next_status = "CONFIRMADO" if confirm else "BORRADOR"
+            next_data = dict(previous)
+            for field in ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms"):
+                if field in {"driver", "helper1", "helper2", "locality"}:
+                    next_data[field] = canonical(route.get(field))
+                elif field == "recarga_qty":
+                    next_data[field] = int(route.get(field, 0) or 0)
+                elif field == "kms":
+                    next_data[field] = safe_number(route.get("kms")) if canonical(route.get("locality")) == "SIERRA GRANDE" else 0
+                else:
+                    next_data[field] = str(route.get(field, "") or "").strip()
+            next_data["status"] = next_status
+            tracked = ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms", "status")
+            changed = {field: {"anterior": previous.get(field), "nuevo": next_data.get(field)} for field in tracked if str(previous.get(field) or "") != str(next_data.get(field) or "")}
             con.execute(
                 """
                 UPDATE planning_routes SET rendicion=?,driver=?,helper1=?,helper2=?,locality=?,
@@ -1611,11 +1645,31 @@ def save_routes(planning_date: str, routes: list[dict[str, Any]], confirm: bool,
                     canonical(route.get("helper1")), canonical(route.get("helper2")), canonical(route.get("locality")),
                     str(route.get("observations", "") or "").strip(), int(route.get("recarga_qty", 0) or 0),
                     safe_number(route.get("kms")) if canonical(route.get("locality")) == "SIERRA GRANDE" else 0,
-                    "CONFIRMADO" if confirm else "BORRADOR", datetime.now().isoformat(timespec="seconds"),
+                    next_status, datetime.now().isoformat(timespec="seconds"),
                     route_id, planning_date,
                 ),
             )
             sync_recargas(con, route_id)
+            if changed and edit_existing:
+                register_audit_event(
+                    con,
+                    user,
+                    "Edición de formación",
+                    "Planning CHESS",
+                    planning_date,
+                    previous.get("division", division),
+                    "planning_routes",
+                    route_id,
+                    previous_data={field: previous.get(field) for field in tracked},
+                    new_data={
+                        "route": {field: next_data.get(field) for field in tracked},
+                        "changes": changed,
+                        "motivo": str(reason or "").strip(),
+                        "ruta": previous.get("domain"),
+                        "unidad": previous.get("unit_id"),
+                    },
+                    ip_address=ip_address,
+                )
 
 
 def copy_last_assignments(planning_date: str) -> int:
@@ -3672,6 +3726,89 @@ def connector_zip_bytes() -> bytes:
     return output.getvalue()
 
 
+def connector_info(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    base_url = _base_url_from_request(handler)
+    return {
+        "web_version": WEB_APP_VERSION,
+        "required_connector_version": REQUIRED_CONNECTOR_VERSION,
+        "connector_status": "NO_VERIFICADO",
+        "setup_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
+        "download_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
+        "zip_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
+        "message": "Esta PC necesita configurar Outlook. La instalacion se realiza una sola vez.",
+    }
+
+
+def _simple_connector_test_pdf_bytes() -> bytes:
+    text_bytes = _pdf_escape("Planning DDV - prueba de conector Outlook")
+    content = b"BT /F1 18 Tf 72 735 Td (" + text_bytes + b") Tj ET\n"
+    compressed = zlib.compress(content, 9)
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        f"<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode() + compressed + b"\nendstream",
+    ]
+    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for idx, obj in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out.extend(f"{idx} 0 obj\n".encode())
+        out.extend(obj)
+        out.extend(b"\nendobj\n")
+    xref = len(out)
+    out.extend(f"xref\n0 {len(objects)+1}\n".encode())
+    out.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        out.extend(f"{offset:010d} 00000 n \n".encode())
+    out.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    return bytes(out)
+
+
+def create_connector_test_package(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> dict[str, str]:
+    html_body = f"""
+    <html><body style="font-family:Arial,Segoe UI,sans-serif;background:#f2f6f9;padding:24px;color:#102a43;">
+      <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;background:#ffffff;border:1px solid #d8e2ea;">
+        <tr><td style="background:#0b2740;color:#ffffff;padding:18px 22px;font-size:22px;font-weight:bold;">Planning DDV</td></tr>
+        <tr><td style="padding:20px 22px;font-size:15px;line-height:1.45;">
+          <p style="margin:0 0 12px;">Prueba de configuracion del Outlook Connector.</p>
+          <p style="margin:0;">Si este borrador se abrio en Outlook clasico, esta PC quedo lista para usar Enviar por Outlook.</p>
+          <p style="margin:14px 0 0;color:#61758a;">Version requerida del conector: {html.escape(REQUIRED_CONNECTOR_VERSION)}</p>
+        </td></tr>
+      </table>
+    </body></html>
+    """
+    token = secrets.token_urlsafe(32)
+    now_ts = time.time()
+    _cleanup_outlook_packages()
+    with OUTLOOK_PACKAGES_LOCK:
+        OUTLOOK_PACKAGES[token] = {
+            "token": token,
+            "created_at": now_iso(),
+            "expires_at": now_ts + OUTLOOK_PACKAGE_TTL_SECONDS,
+            "created_by": user.get("username", ""),
+            "planning_date": "",
+            "division": "TODAS",
+            "to": str(user.get("username") or "Planning"),
+            "cc": "",
+            "subject": "Prueba Planning DDV Outlook Connector",
+            "html_body": html_body,
+            "attachments": [
+                _attachment_from_bytes("prueba_planning_ddv_connector.pdf", "application/pdf", _simple_connector_test_pdf_bytes())
+            ],
+            "connector_test": True,
+        }
+    package_url = f"{_base_url_from_request(handler)}/api/mail/package/{token}"
+    protocol_url = f"planningddv://mail?token={quote(token, safe='')}&package_url={quote(package_url, safe='')}"
+    return {
+        "token": token,
+        "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
+        "protocol_url": protocol_url,
+        "package_url": package_url,
+    }
+
+
 
 def _edge_executable() -> Path | None:
     candidates = [
@@ -3871,7 +4008,6 @@ def open_outlook_visual_draft(
     subject: str,
     planning_date: str,
     division: str,
-    send_now: bool = False,
 ) -> None:
     if platform.system() != "Windows":
         raise RuntimeError("La apertura directa en Outlook solo está disponible en Windows.")
@@ -3882,7 +4018,6 @@ def open_outlook_visual_draft(
     def ps_escape(text: str) -> str:
         return text.replace("'", "''")
 
-    action = "$mail.Send()" if send_now else "$mail.Display()"
     body = """
     <html><body style="margin:0;padding:0;background:#eef3f7;">
       <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background:#eef3f7;">
@@ -3904,17 +4039,17 @@ def open_outlook_visual_draft(
     $mail.HTMLBody = @'
 {body}
 '@
-    {action}
+    $mail.Display()
     """
     ps_path.write_text(ps, encoding="utf-8-sig")
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_path)],
+        ["powershell.exe", "-NoProfile", "-File", str(ps_path)],
         capture_output=True, text=True, timeout=45,
     )
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "No se pudo abrir Outlook.")
 
-def open_outlook_draft(to: str, cc: str, subject: str, body_html: str, send_now: bool = False) -> None:
+def open_outlook_draft(to: str, cc: str, subject: str, body_html: str) -> None:
     if platform.system() != "Windows":
         raise RuntimeError("La apertura directa en Outlook solo está disponible en Windows.")
     EXPORTS_DIR.mkdir(exist_ok=True)
@@ -3924,7 +4059,6 @@ def open_outlook_draft(to: str, cc: str, subject: str, body_html: str, send_now:
     ps_path = Path(tempfile.gettempdir()) / f"operations_ddv_mail_{stamp}.ps1"
     def ps_escape(text: str) -> str:
         return text.replace("'", "''")
-    action = "$mail.Send()" if send_now else "$mail.Display()"
     ps = f"""
     $outlook = New-Object -ComObject Outlook.Application
     $mail = $outlook.CreateItem(0)
@@ -3934,11 +4068,11 @@ def open_outlook_draft(to: str, cc: str, subject: str, body_html: str, send_now:
     $mail.HTMLBody = [System.IO.File]::ReadAllText('{ps_escape(str(html_path))}', [System.Text.Encoding]::UTF8)
     $logo = $mail.Attachments.Add('{ps_escape(str(WEB_DIR / "assets" / "ddv_logo.png"))}')
     $logo.PropertyAccessor.SetProperty('http://schemas.microsoft.com/mapi/proptag/0x3712001F','ddv_logo')
-    {action}
+    $mail.Display()
     """
     ps_path.write_text(ps, encoding="utf-8-sig")
     result = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_path)],
+        ["powershell.exe", "-NoProfile", "-File", str(ps_path)],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
@@ -3997,7 +4131,7 @@ $m.Subject='{safe_title} - Planning DDV'
 $m.HTMLBody=[IO.File]::ReadAllText('{safe_path}',[Text.Encoding]::UTF8)
 $m.Display()"""
     ps_path.write_text(ps, encoding="utf-8-sig")
-    result = subprocess.run(["powershell.exe","-NoProfile","-ExecutionPolicy","Bypass","-File",str(ps_path)], capture_output=True, text=True, timeout=45)
+    result = subprocess.run(["powershell.exe","-NoProfile","-File",str(ps_path)], capture_output=True, text=True, timeout=45)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "No se pudo abrir Outlook.")
 
@@ -4309,6 +4443,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(storage_diagnostics())
                 elif path == "/api/dates":
                     self.send_json({"dates": dates_list()})
+                elif path == "/api/connector/info":
+                    self.send_json(connector_info(self))
                 elif path == "/api/routes":
                     d = query.get("date", "")
                     self.send_json({"routes": route_rows(d, query.get("division", "")), "summary": summary(d) if d else {}})
@@ -4623,6 +4759,10 @@ class Handler(BaseHTTPRequestHandler):
                     payload.get("routes", []),
                     bool(payload.get("confirm")),
                     payload.get("division", "TODAS"),
+                    bool(payload.get("edit_existing")),
+                    str(payload.get("reason") or ""),
+                    user,
+                    self.client_ip(),
                 )
                 register_audit_event(None, user, "Confirmación de jornada" if payload.get("confirm") else "Guardado de borrador", "Planning CHESS", planning_date, payload.get("division", "TODAS"), new_data={"routes": len(payload.get("routes", []))}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "routes": route_rows(planning_date), "summary": summary(planning_date)})
@@ -4653,19 +4793,30 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
             elif path == "/api/mail/package":
                 self.send_json(create_outlook_connector_package(payload, user, self))
+            elif path == "/api/connector/test-package":
+                self.send_json(create_connector_test_package(user, self))
             elif path == "/api/mail/open":
                 planning_date = payload.get("date", "")
                 division = payload.get("division", "TODAS")
-                body = report_html(planning_date, division, logo_src="cid:ddv_logo", include_novelties=True)
                 recipient = payload.get("to", "") or "Planning"
-                open_outlook_visual_draft(recipient, payload.get("cc", ""), payload.get("subject", ""), planning_date, division, bool(payload.get("send_now")))
+                package = create_outlook_connector_package(
+                    {
+                        "date": planning_date,
+                        "division": division,
+                        "to": recipient,
+                        "cc": payload.get("cc", ""),
+                        "subject": payload.get("subject", ""),
+                    },
+                    user,
+                    self,
+                )
                 with db() as con:
                     con.execute(
                         "INSERT INTO mail_log(mail_date,planning_date,recipients,cc,subject,status) VALUES(?,?,?,?,?,?)",
-                        (datetime.now().isoformat(timespec="seconds"), planning_date, recipient, payload.get("cc", ""), payload.get("subject", ""), "ENVIADO" if payload.get("send_now") else "BORRADOR ABIERTO"),
+                        (datetime.now().isoformat(timespec="seconds"), planning_date, recipient, payload.get("cc", ""), payload.get("subject", ""), "BORRADOR PENDIENTE CONECTOR"),
                     )
-                    register_audit_event(con, user, "Envío de mail" if payload.get("send_now") else "Generación de borrador mail", "Mail operativo", planning_date, division, new_data={"to": recipient, "subject": payload.get("subject", "")}, ip_address=self.client_ip())
-                self.send_json({"ok": True})
+                    register_audit_event(con, user, "Generación de borrador mail", "Mail operativo", planning_date, division, new_data={"to": recipient, "subject": payload.get("subject", ""), "connector_token_expires_at": package.get("expires_at")}, ip_address=self.client_ip())
+                self.send_json({"ok": True, **package})
             else:
                 self.send_error(404)
         except ValueError as exc:
