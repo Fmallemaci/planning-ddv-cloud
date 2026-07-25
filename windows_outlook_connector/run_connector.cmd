@@ -1,9 +1,9 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -File "%LOCALAPPDATA%\PlanningDDVOutlookConnector\planning_ddv_outlook_connector.ps1" "%~1"
+"%LOCALAPPDATA%\PlanningDDVOutlookConnector\planning_ddv_outlook_bridge.exe" "%~1"
 if errorlevel 1 (
   echo.
-  echo Planning DDV Outlook Connector fallo.
+  echo Planning DDV Outlook Bridge fallo.
   echo Revise el log:
   echo %LOCALAPPDATA%\PlanningDDVOutlookConnector\connector.log
   echo.

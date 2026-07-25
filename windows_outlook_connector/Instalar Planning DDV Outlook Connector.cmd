@@ -26,7 +26,9 @@ pause
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-copy /Y "%~dp0planning_ddv_outlook_connector.ps1" "%INSTALL_DIR%\planning_ddv_outlook_connector.ps1" >nul
+copy /Y "%~dp0planning_ddv_outlook_bridge.exe" "%INSTALL_DIR%\planning_ddv_outlook_bridge.exe" >nul
+if errorlevel 1 goto :error
+copy /Y "%~dp0planning_ddv_outlook_bridge.cs" "%INSTALL_DIR%\planning_ddv_outlook_bridge.cs" >nul
 if errorlevel 1 goto :error
 copy /Y "%~dp0run_connector.cmd" "%INSTALL_DIR%\run_connector.cmd" >nul
 if errorlevel 1 goto :error

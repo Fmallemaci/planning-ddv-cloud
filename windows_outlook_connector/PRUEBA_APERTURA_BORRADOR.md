@@ -6,7 +6,7 @@ La prueba debe hacerse desde la aplicacion web, no desde un token escrito a mano
 2. Iniciar sesion en Planning DDV con el usuario de la PC.
 3. Abrir `Configurar esta PC`.
 4. Presionar `Probar Outlook`.
-5. Windows debe invocar `planningddv://mail`.
+5. Windows debe invocar `planningddv://crear-mail?id=...`.
 6. Outlook clasico debe abrir un borrador de prueba.
 
 Resultado esperado:
@@ -16,4 +16,4 @@ Resultado esperado:
 - Adjunta un PDF de prueba.
 - No solicita ni guarda credenciales.
 
-Si la app muestra `Para abrir el borrador en Outlook de escritorio debe instalarse el conector Planning DDV.`, descargar el conector e instalarlo nuevamente.
+Si la app muestra `Para abrir el borrador en Outlook de escritorio debe instalarse el puente Planning DDV.`, descargar el instalador del puente e instalarlo nuevamente.

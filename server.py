@@ -79,6 +79,11 @@ CONNECTOR_DIR = APP_DIR / "windows_outlook_connector"
 WEB_APP_VERSION = "1.0.0"
 REQUIRED_CONNECTOR_VERSION = "1.0.0"
 DEFAULT_PUBLIC_BASE_URL = os.environ.get("PLANNING_DDV_PUBLIC_URL", "https://planning-ddv-usuarios-prueba.onrender.com").strip().rstrip("/")
+CONFIRMED_EDIT_USERS = {
+    str(name or "").strip().upper()
+    for name in os.environ.get("PLANNING_DDV_CONFIRMED_EDIT_USERS", "").split(",")
+    if str(name or "").strip()
+}
 
 STORAGE_TABLES = [
     "planning_routes",
@@ -248,7 +253,34 @@ def public_user(row: dict[str, Any] | sqlite3.Row | None) -> dict[str, Any] | No
         "last_login": data.get("last_login"),
         "created_by": data.get("created_by"),
         "is_admin": role == "ADMINISTRADOR",
+        "can_reopen_confirmed": role == "ADMINISTRADOR" or user_has_confirmed_edit_permission(data),
     }
+
+
+def truthy_field(data: dict[str, Any], *names: str) -> bool:
+    for name in names:
+        if name in data and truthy(data.get(name)):
+            return True
+    return False
+
+
+def user_has_confirmed_edit_permission(user: dict[str, Any] | sqlite3.Row | None) -> bool:
+    if not user:
+        return False
+    data = dict(user)
+    role = canonical(data.get("role"))
+    if role == "ADMINISTRADOR":
+        return True
+    username = canonical(data.get("username"))
+    if username and username in CONFIRMED_EDIT_USERS:
+        return True
+    return truthy_field(
+        data,
+        "can_reopen_confirmed",
+        "can_edit_confirmed",
+        "edit_confirmed",
+        "confirmed_edit",
+    )
 
 
 def hash_password(password: str) -> str:
@@ -1670,6 +1702,78 @@ def save_routes(
                     },
                     ip_address=ip_address,
                 )
+
+
+def confirmed_status(value: Any) -> bool:
+    return canonical(value) in {"CONFIRMADO", "CONFIRMADA"}
+
+
+def reopen_confirmed_routes(
+    planning_date: str,
+    division: str,
+    user: dict[str, Any],
+    reason: str = "",
+    ip_address: str = "",
+) -> list[dict[str, Any]]:
+    if not planning_date:
+        raise ValueError("Debe seleccionar una fecha operativa.")
+    if not user_has_confirmed_edit_permission(user):
+        raise PermissionError("No tiene permiso para reabrir una formación confirmada.")
+    require_base_access(user, division)
+
+    selected = route_rows(planning_date, division)
+    confirmed = [row for row in selected if confirmed_status(row.get("status"))]
+    if not confirmed:
+        raise ValueError("No hay formaciones confirmadas para reabrir en la selección.")
+
+    for row in confirmed:
+        require_base_access(user, row.get("division", ""))
+
+    now = datetime.now().isoformat(timespec="seconds")
+    with db() as con:
+        for row in confirmed:
+            con.execute(
+                "UPDATE planning_routes SET status='BORRADOR', updated_at=? WHERE id=?",
+                (now, str(row.get("id") or "")),
+            )
+        register_audit_event(
+            con,
+            user,
+            "Reapertura de formación confirmada",
+            "Planning CHESS",
+            planning_date,
+            division,
+            "planning_routes",
+            ",".join(str(row.get("id") or "") for row in confirmed),
+            previous_data={
+                "routes": [
+                    {
+                        "id": row.get("id"),
+                        "division": row.get("division"),
+                        "domain": row.get("domain"),
+                        "unit_id": row.get("unit_id"),
+                        "status": row.get("status"),
+                        "driver": row.get("driver"),
+                        "helper1": row.get("helper1"),
+                        "helper2": row.get("helper2"),
+                        "locality": row.get("locality"),
+                        "rendicion": row.get("rendicion"),
+                        "observations": row.get("observations"),
+                        "recarga_qty": row.get("recarga_qty"),
+                        "kms": row.get("kms"),
+                    }
+                    for row in confirmed
+                ]
+            },
+            new_data={
+                "status": "BORRADOR",
+                "routes": len(confirmed),
+                "motivo": str(reason or "").strip(),
+                "reopened_by": user.get("username", ""),
+            },
+            ip_address=ip_address,
+        )
+    return route_rows(planning_date, division)
 
 
 def copy_last_assignments(planning_date: str) -> int:
@@ -3695,8 +3799,8 @@ def create_outlook_connector_package(
             "visual_path": str(visual_path),
             "pdf_path": str(pdf_path),
         }
-    package_url = f"{_base_url_from_request(handler)}/api/mail/package/{token}"
-    protocol_url = f"planningddv://mail?token={quote(token, safe='')}&package_url={quote(package_url, safe='')}"
+    package_url = f"{_base_url_from_request(handler)}/api/mail/draft/{token}"
+    protocol_url = f"planningddv://crear-mail?id={quote(token, safe='')}"
     return {
         "token": token,
         "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
@@ -3735,7 +3839,7 @@ def connector_info(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         "setup_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
         "download_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
         "zip_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
-        "message": "Esta PC necesita configurar Outlook. La instalacion se realiza una sola vez.",
+        "message": "Esta PC necesita instalar el puente Planning DDV para crear borradores en Outlook clásico.",
     }
 
 
@@ -3799,8 +3903,8 @@ def create_connector_test_package(user: dict[str, Any], handler: BaseHTTPRequest
             ],
             "connector_test": True,
         }
-    package_url = f"{_base_url_from_request(handler)}/api/mail/package/{token}"
-    protocol_url = f"planningddv://mail?token={quote(token, safe='')}&package_url={quote(package_url, safe='')}"
+    package_url = f"{_base_url_from_request(handler)}/api/mail/draft/{token}"
+    protocol_url = f"planningddv://crear-mail?id={quote(token, safe='')}"
     return {
         "token": token,
         "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
@@ -4422,7 +4526,7 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 else:
                     self.send_json({"authenticated": True, "user": user, "setup_required": False})
-            elif re.fullmatch(r"/api/mail/package/[A-Za-z0-9_-]+", path):
+            elif re.fullmatch(r"/api/mail/(?:package|draft)/[A-Za-z0-9_-]+", path):
                 token = path.rsplit("/", 1)[-1]
                 package = consume_outlook_connector_package(token)
                 if not package:
@@ -4754,6 +4858,11 @@ class Handler(BaseHTTPRequestHandler):
                 require_base_access(user, payload.get("division", "TODAS"))
                 for route in payload.get("routes", []):
                     require_base_access(user, route.get("division", ""))
+                route_ids = {str(route.get("id") or "").strip() for route in payload.get("routes", []) if str(route.get("id") or "").strip()}
+                previous_routes = [
+                    row for row in route_rows(planning_date, payload.get("division", "TODAS"))
+                    if str(row.get("id") or "").strip() in route_ids
+                ]
                 save_routes(
                     planning_date,
                     payload.get("routes", []),
@@ -4764,8 +4873,38 @@ class Handler(BaseHTTPRequestHandler):
                     user,
                     self.client_ip(),
                 )
-                register_audit_event(None, user, "Confirmación de jornada" if payload.get("confirm") else "Guardado de borrador", "Planning CHESS", planning_date, payload.get("division", "TODAS"), new_data={"routes": len(payload.get("routes", []))}, ip_address=self.client_ip())
-                self.send_json({"ok": True, "routes": route_rows(planning_date), "summary": summary(planning_date)})
+                all_routes = route_rows(planning_date)
+                updated_routes = [
+                    row for row in all_routes
+                    if str(row.get("id") or "").strip() in route_ids
+                ]
+                register_audit_event(
+                    None,
+                    user,
+                    "Confirmación de jornada" if payload.get("confirm") else "Guardado de borrador",
+                    "Planning CHESS",
+                    planning_date,
+                    payload.get("division", "TODAS"),
+                    previous_data={"routes": previous_routes} if payload.get("confirm") else None,
+                    new_data={
+                        "routes": len(payload.get("routes", [])),
+                        "confirmed_by": user.get("username", "") if payload.get("confirm") else "",
+                        "updated_routes": updated_routes if payload.get("confirm") else [],
+                    },
+                    ip_address=self.client_ip(),
+                )
+                self.send_json({"ok": True, "routes": all_routes, "summary": summary(planning_date)})
+            elif path == "/api/routes/reopen":
+                planning_date = payload.get("date", "")
+                division = payload.get("division", "TODAS")
+                reopened = reopen_confirmed_routes(
+                    planning_date,
+                    division,
+                    user,
+                    str(payload.get("reason") or ""),
+                    self.client_ip(),
+                )
+                self.send_json({"ok": True, "routes": route_rows(planning_date), "reopened": reopened, "summary": summary(planning_date)})
             elif path == "/api/routes/copy-last":
                 require_role(user, "ADMINISTRADOR")
                 count = copy_last_assignments(payload.get("date", ""))
