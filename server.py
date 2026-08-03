@@ -2,6 +2,12 @@ from __future__ import annotations
 
 import base64
 import csv
+from email import policy
+from email.mime.application import MIMEApplication
+from email.mime.image import MIMEImage
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.utils import formatdate
 import hashlib
 import hmac
 import html
@@ -29,7 +35,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, urlparse
 from xml.etree import ElementTree as ET
 
 try:
@@ -72,13 +78,6 @@ ROLE_BASES = {
     "CONSULTA": "TODAS",
 }
 FAILED_LOGINS: dict[str, list[float]] = {}
-OUTLOOK_PACKAGE_TTL_SECONDS = 10 * 60
-OUTLOOK_PACKAGES: dict[str, dict[str, Any]] = {}
-OUTLOOK_PACKAGES_LOCK = threading.Lock()
-CONNECTOR_DIR = APP_DIR / "windows_outlook_connector"
-WEB_APP_VERSION = "1.0.0"
-REQUIRED_CONNECTOR_VERSION = "1.0.0"
-DEFAULT_PUBLIC_BASE_URL = os.environ.get("PLANNING_DDV_PUBLIC_URL", "https://planning-ddv-usuarios-prueba.onrender.com").strip().rstrip("/")
 CONFIRMED_EDIT_USERS = {
     str(name or "").strip().upper()
     for name in os.environ.get("PLANNING_DDV_CONFIRMED_EDIT_USERS", "").split(",")
@@ -3716,201 +3715,74 @@ def generate_pdf(planning_date: str, division: str = "TODAS") -> Path:
     return pdf_path
 
 
-def _attachment_from_bytes(
-    name: str,
-    content_type: str,
-    data: bytes,
-    cid: str = "",
-    inline: bool = False,
-) -> dict[str, Any]:
-    return {
-        "name": name,
-        "content_type": content_type,
-        "content_base64": base64.b64encode(data).decode("ascii"),
-        "cid": cid,
-        "inline": inline,
-    }
+def _format_address_list(value: str) -> str:
+    parts = [part.strip() for part in re.split(r"[;,]+", str(value or "")) if part.strip()]
+    return ", ".join(parts)
 
 
-def _cleanup_outlook_packages() -> None:
-    now_ts = time.time()
-    with OUTLOOK_PACKAGES_LOCK:
-        expired = [token for token, package in OUTLOOK_PACKAGES.items() if package.get("expires_at", 0) <= now_ts]
-        for token in expired:
-            OUTLOOK_PACKAGES.pop(token, None)
+def _eml_filename(planning_date: str) -> str:
+    safe_date = re.sub(r"[^0-9-]+", "_", str(planning_date or "")).strip("_") or datetime.now().strftime("%Y-%m-%d")
+    return f"Salida_Diaria_DDV_{safe_date}.eml"
 
 
-def _base_url_from_request(handler: BaseHTTPRequestHandler) -> str:
-    forwarded_proto = handler.headers.get("X-Forwarded-Proto", "")
-    proto = forwarded_proto.split(",")[0].strip() or ("https" if handler.headers.get("X-Forwarded-Host") else "http")
-    host = handler.headers.get("X-Forwarded-Host") or handler.headers.get("Host") or f"127.0.0.1:{PORT}"
-    return f"{proto}://{host}".rstrip("/")
-
-
-def create_outlook_connector_package(
+def build_outlook_draft_eml(
     payload: dict[str, Any],
     user: dict[str, Any],
-    handler: BaseHTTPRequestHandler,
-) -> dict[str, str]:
+) -> tuple[str, bytes]:
     planning_date = str(payload.get("date") or "").strip()
     if not planning_date:
         raise ValueError("Debe seleccionar una fecha operativa.")
     division = str(payload.get("division") or "TODAS").strip() or "TODAS"
     require_base_access(user, division)
     subject = str(payload.get("subject") or "").strip() or f"Salida diaria DDV - {datetime.fromisoformat(planning_date).strftime('%d/%m/%Y')}"
-    to = str(payload.get("to") or "Planning").strip() or "Planning"
-    cc = str(payload.get("cc") or "").strip()
+    to = _format_address_list(str(payload.get("to") or "Planning").strip() or "Planning")
+    cc = _format_address_list(str(payload.get("cc") or ""))
     routes = route_rows(planning_date, division)
     if not routes:
         raise ValueError("No hay salidas cargadas para generar el mail operativo.")
+
     visual_path = render_mail_top_image(planning_date, division)
     if not visual_path.exists() or visual_path.stat().st_size <= 0:
-        raise ValueError("No se pudo generar la lámina visual del mail operativo.")
+        raise ValueError("No se pudo generar la lamina visual del mail operativo.")
     html_body = mail_html(planning_date, division, preview=False)
     if not html_body.strip():
         raise ValueError("No se pudo generar el cuerpo real del mail operativo.")
-    attachments: list[dict[str, Any]] = []
-
-    attachments.append(_attachment_from_bytes(visual_path.name, "image/png", visual_path.read_bytes(), cid="planning_top", inline=True))
 
     safe_div = re.sub(r"[^A-Z0-9]+", "_", canonical(division)).strip("_") or "TODAS"
     pdf_path = generate_pdf(planning_date, division)
     if not pdf_path.exists() or pdf_path.stat().st_size <= 0:
         raise ValueError("No se pudo generar el PDF real de la salida seleccionada.")
     pdf_name = pdf_path.name or f"salida_diaria_{planning_date}_{safe_div}.pdf"
-    attachments.append(_attachment_from_bytes(pdf_name, "application/pdf", pdf_path.read_bytes()))
 
-    token = secrets.token_urlsafe(32)
-    now_ts = time.time()
-    _cleanup_outlook_packages()
-    with OUTLOOK_PACKAGES_LOCK:
-        OUTLOOK_PACKAGES[token] = {
-            "token": token,
-            "created_at": now_iso(),
-            "expires_at": now_ts + OUTLOOK_PACKAGE_TTL_SECONDS,
-            "created_by": user.get("username", ""),
-            "planning_date": planning_date,
-            "division": division,
-            "to": to,
-            "cc": cc,
-            "subject": subject,
-            "html_body": html_body,
-            "attachments": attachments,
-            "visual_path": str(visual_path),
-            "pdf_path": str(pdf_path),
-        }
-    package_url = f"{_base_url_from_request(handler)}/api/mail/draft/{token}"
-    protocol_url = f"planningddv://crear-mail?id={quote(token, safe='')}"
-    return {
-        "token": token,
-        "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
-        "protocol_url": protocol_url,
-        "package_url": package_url,
-    }
+    root = MIMEMultipart("mixed")
+    root["X-Unsent"] = "1"
+    root["Date"] = formatdate(localtime=True)
+    root["To"] = to
+    if cc:
+        root["Cc"] = cc
+    root["Subject"] = subject
 
+    related = MIMEMultipart("related")
+    alternative = MIMEMultipart("alternative")
+    plain_text = (
+        f"Salida diaria DDV {planning_date}\r\n\r\n"
+        "Este borrador contiene el reporte operativo en formato HTML y el PDF adjunto.\r\n"
+    )
+    alternative.attach(MIMEText(plain_text, "plain", "utf-8"))
+    alternative.attach(MIMEText(html_body, "html", "utf-8"))
+    related.attach(alternative)
 
-def consume_outlook_connector_package(token: str) -> dict[str, Any] | None:
-    _cleanup_outlook_packages()
-    with OUTLOOK_PACKAGES_LOCK:
-        package = OUTLOOK_PACKAGES.pop(token, None)
-    if not package or package.get("expires_at", 0) <= time.time():
-        return None
-    package = dict(package)
-    package.pop("expires_at", None)
-    return package
+    image = MIMEImage(visual_path.read_bytes(), _subtype="png", name=visual_path.name)
+    image.add_header("Content-ID", "<planning_top>")
+    image.add_header("Content-Disposition", "inline", filename=visual_path.name)
+    related.attach(image)
+    root.attach(related)
 
+    pdf_part = MIMEApplication(pdf_path.read_bytes(), _subtype="pdf", name=pdf_name)
+    pdf_part.add_header("Content-Disposition", "attachment", filename=pdf_name)
+    root.attach(pdf_part)
 
-def connector_zip_bytes() -> bytes:
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        if CONNECTOR_DIR.exists():
-            for path in CONNECTOR_DIR.rglob("*"):
-                if path.is_file():
-                    zf.write(path, path.relative_to(CONNECTOR_DIR).as_posix())
-    return output.getvalue()
-
-
-def connector_info(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    base_url = _base_url_from_request(handler)
-    return {
-        "web_version": WEB_APP_VERSION,
-        "required_connector_version": REQUIRED_CONNECTOR_VERSION,
-        "connector_status": "NO_VERIFICADO",
-        "setup_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
-        "download_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
-        "zip_url": f"{base_url}/downloads/planning_ddv_outlook_connector.zip",
-        "message": "Esta PC necesita instalar el puente Planning DDV para crear borradores en Outlook clásico.",
-    }
-
-
-def _simple_connector_test_pdf_bytes() -> bytes:
-    text_bytes = _pdf_escape("Planning DDV - prueba de conector Outlook")
-    content = b"BT /F1 18 Tf 72 735 Td (" + text_bytes + b") Tj ET\n"
-    compressed = zlib.compress(content, 9)
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Count 1 /Kids [3 0 R] >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
-        f"<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode() + compressed + b"\nendstream",
-    ]
-    out = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
-    offsets = [0]
-    for idx, obj in enumerate(objects, start=1):
-        offsets.append(len(out))
-        out.extend(f"{idx} 0 obj\n".encode())
-        out.extend(obj)
-        out.extend(b"\nendobj\n")
-    xref = len(out)
-    out.extend(f"xref\n0 {len(objects)+1}\n".encode())
-    out.extend(b"0000000000 65535 f \n")
-    for offset in offsets[1:]:
-        out.extend(f"{offset:010d} 00000 n \n".encode())
-    out.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
-    return bytes(out)
-
-
-def create_connector_test_package(user: dict[str, Any], handler: BaseHTTPRequestHandler) -> dict[str, str]:
-    html_body = f"""
-    <html><body style="font-family:Arial,Segoe UI,sans-serif;background:#f2f6f9;padding:24px;color:#102a43;">
-      <table role="presentation" width="680" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;background:#ffffff;border:1px solid #d8e2ea;">
-        <tr><td style="background:#0b2740;color:#ffffff;padding:18px 22px;font-size:22px;font-weight:bold;">Planning DDV</td></tr>
-        <tr><td style="padding:20px 22px;font-size:15px;line-height:1.45;">
-          <p style="margin:0 0 12px;">Prueba de configuracion del Outlook Connector.</p>
-          <p style="margin:0;">Si este borrador se abrio en Outlook clasico, esta PC quedo lista para usar Enviar por Outlook.</p>
-          <p style="margin:14px 0 0;color:#61758a;">Version requerida del conector: {html.escape(REQUIRED_CONNECTOR_VERSION)}</p>
-        </td></tr>
-      </table>
-    </body></html>
-    """
-    token = secrets.token_urlsafe(32)
-    now_ts = time.time()
-    _cleanup_outlook_packages()
-    with OUTLOOK_PACKAGES_LOCK:
-        OUTLOOK_PACKAGES[token] = {
-            "token": token,
-            "created_at": now_iso(),
-            "expires_at": now_ts + OUTLOOK_PACKAGE_TTL_SECONDS,
-            "created_by": user.get("username", ""),
-            "planning_date": "",
-            "division": "TODAS",
-            "to": str(user.get("username") or "Planning"),
-            "cc": "",
-            "subject": "Prueba Planning DDV Outlook Connector",
-            "html_body": html_body,
-            "attachments": [
-                _attachment_from_bytes("prueba_planning_ddv_connector.pdf", "application/pdf", _simple_connector_test_pdf_bytes())
-            ],
-            "connector_test": True,
-        }
-    package_url = f"{_base_url_from_request(handler)}/api/mail/draft/{token}"
-    protocol_url = f"planningddv://crear-mail?id={quote(token, safe='')}"
-    return {
-        "token": token,
-        "expires_at": datetime.fromtimestamp(now_ts + OUTLOOK_PACKAGE_TTL_SECONDS).isoformat(timespec="seconds"),
-        "protocol_url": protocol_url,
-        "package_url": package_url,
-    }
+    return _eml_filename(planning_date), root.as_bytes(policy=policy.SMTP)
 
 
 
@@ -4499,15 +4371,6 @@ class Handler(BaseHTTPRequestHandler):
                 asset = WEB_DIR / path.lstrip("/")
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
-            elif path == "/downloads/planning_ddv_outlook_connector.zip":
-                raw = connector_zip_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Disposition", "attachment; filename=planning_ddv_outlook_connector.zip")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(raw)
             elif path == "/api/health":
                 self.send_json({"ok": True, "status": "ready"})
             elif path == "/api/auth/me":
@@ -4526,13 +4389,6 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 else:
                     self.send_json({"authenticated": True, "user": user, "setup_required": False})
-            elif re.fullmatch(r"/api/mail/(?:package|draft)/[A-Za-z0-9_-]+", path):
-                token = path.rsplit("/", 1)[-1]
-                package = consume_outlook_connector_package(token)
-                if not package:
-                    self.send_json({"error": "El paquete de mail venció o ya fue utilizado."}, 404)
-                else:
-                    self.send_json(package)
             elif path.startswith("/api/"):
                 user = require_login(self)
                 if path in {"/api/masters", "/api/backup/download", "/api/audit-log", "/api/audit", "/api/users", "/api/active-users", "/api/storage/diagnostics", "/api/diagnostics/storage"}:
@@ -4547,8 +4403,25 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(storage_diagnostics())
                 elif path == "/api/dates":
                     self.send_json({"dates": dates_list()})
-                elif path == "/api/connector/info":
-                    self.send_json(connector_info(self))
+                elif path == "/api/mail/draft.eml":
+                    filename, raw = build_outlook_draft_eml(
+                        {
+                            "date": query.get("date", ""),
+                            "division": query.get("division", "TODAS"),
+                            "to": query.get("to", "Planning"),
+                            "cc": query.get("cc", ""),
+                            "subject": query.get("subject", ""),
+                        },
+                        user,
+                    )
+                    register_audit_event(None, user, "Descarga borrador EML", "Mail operativo", query.get("date", ""), query.get("division", "TODAS"), new_data={"to": query.get("to", "Planning"), "subject": query.get("subject", "")}, ip_address=self.client_ip())
+                    self.send_response(200)
+                    self.send_header("Content-Type", "message/rfc822")
+                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(raw)
                 elif path == "/api/routes":
                     d = query.get("date", "")
                     self.send_json({"routes": route_rows(d, query.get("division", "")), "summary": summary(d) if d else {}})
@@ -4930,32 +4803,6 @@ class Handler(BaseHTTPRequestHandler):
                 open_history_mail(payload, payload.get("section", "routes"))
                 register_audit_event(None, user, "Generación mail histórico", "Histórico", payload.get("start", ""), payload.get("division", "TODAS"), ip_address=self.client_ip())
                 self.send_json({"ok": True})
-            elif path == "/api/mail/package":
-                self.send_json(create_outlook_connector_package(payload, user, self))
-            elif path == "/api/connector/test-package":
-                self.send_json(create_connector_test_package(user, self))
-            elif path == "/api/mail/open":
-                planning_date = payload.get("date", "")
-                division = payload.get("division", "TODAS")
-                recipient = payload.get("to", "") or "Planning"
-                package = create_outlook_connector_package(
-                    {
-                        "date": planning_date,
-                        "division": division,
-                        "to": recipient,
-                        "cc": payload.get("cc", ""),
-                        "subject": payload.get("subject", ""),
-                    },
-                    user,
-                    self,
-                )
-                with db() as con:
-                    con.execute(
-                        "INSERT INTO mail_log(mail_date,planning_date,recipients,cc,subject,status) VALUES(?,?,?,?,?,?)",
-                        (datetime.now().isoformat(timespec="seconds"), planning_date, recipient, payload.get("cc", ""), payload.get("subject", ""), "BORRADOR PENDIENTE CONECTOR"),
-                    )
-                    register_audit_event(con, user, "Generación de borrador mail", "Mail operativo", planning_date, division, new_data={"to": recipient, "subject": payload.get("subject", ""), "connector_token_expires_at": package.get("expires_at")}, ip_address=self.client_ip())
-                self.send_json({"ok": True, **package})
             else:
                 self.send_error(404)
         except ValueError as exc:
