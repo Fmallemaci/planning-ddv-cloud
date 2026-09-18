@@ -1022,6 +1022,16 @@ def init_db() -> None:
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
+            CREATE TABLE IF NOT EXISTS picking_planillas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                division TEXT NOT NULL,
+                planning_date TEXT NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
+                content_base64 TEXT NOT NULL,
+                uploaded_by TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(division, planning_date)
+            );
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL UNIQUE,
@@ -1275,6 +1285,22 @@ def ensure_route_planning_context(con: Any, planning_date: Any, division: Any) -
             "La importacion fue cancelada."
         )
     return planning_day_id
+
+
+def save_picking_planilla(division: str, planning_date: str, filename: str, content_base64: str, user: dict[str, Any]) -> None:
+    """Guarda (o reemplaza) la Planilla de Carga de Picking DDV para una
+    división+fecha. Si ya existía una para esa combinación, la pisa —
+    Picking DDV solo necesita la última, no un historial de PDFs."""
+    with db() as con:
+        con.execute(
+            "DELETE FROM picking_planillas WHERE division=? AND planning_date=?",
+            (division, planning_date),
+        )
+        con.execute(
+            """INSERT INTO picking_planillas (division, planning_date, filename, content_base64, uploaded_by)
+               VALUES (?,?,?,?,?)""",
+            (division, planning_date, filename, content_base64, user.get("username", "")),
+        )
 
 
 def import_routes(records: list[dict[str, Any]]) -> dict[str, int]:
@@ -3464,6 +3490,9 @@ def _pdf_truncate(text: Any, width: float, size: float) -> str:
 
 def build_pdf_bytes(planning_date: str, division: str = "TODAS") -> bytes:
     routes = route_rows(planning_date, division)
+    novelties = novelty_rows(planning_date)
+    if division and division != "TODAS":
+        novelties = [n for n in novelties if canonical(n.get("division")) == canonical(division)]
     display_date = datetime.fromisoformat(planning_date).strftime("%d/%m/%Y")
     logo_bytes = asset_path("ddv_logo.jpg").read_bytes()
 
@@ -3650,6 +3679,47 @@ def build_pdf_bytes(planning_date: str, division: str = "TODAS") -> bytes:
         draw_table_header(accent)
         draw_table_rows(rows, accent, label)
 
+    def draw_novelties() -> None:
+        nonlocal y
+        if not novelties:
+            return
+        novelty_widths = [218, 112, 102, 118, 236]
+        novelty_headers = ["EMPLEADO", "BASE", "ROL", "NOVEDAD", "DETALLE"]
+        ensure(58)
+        rect(MARGIN, y - 22, PAGE_W - 2 * MARGIN, 22, (1.0, 0.96, 0.90), ORANGE, 0.6)
+        text(MARGIN + 9, y - 15, 9.5, "NOVEDADES DEL DIA", True, ORANGE)
+        text(PAGE_W - MARGIN - 76, y - 15, 7.5, f"{len(novelties)} registros", True, ORANGE)
+        y -= 22
+        row_h = 17
+        rect(MARGIN, y - row_h, PAGE_W - 2 * MARGIN, row_h, LIGHT, LINE)
+        x = MARGIN
+        for label, width in zip(novelty_headers, novelty_widths):
+            text(x + 4, y - 11.5, 6.5, label, True, NAVY)
+            x += width
+        y -= row_h
+        for idx, novelty in enumerate(novelties):
+            if y - row_h < BOTTOM:
+                new_page()
+                text(MARGIN, y - 13, 10, "NOVEDADES DEL DIA - continuacion", True, ORANGE)
+                y -= 20
+            if idx % 2:
+                rect(MARGIN, y - row_h, PAGE_W - 2 * MARGIN, row_h, (0.985, 0.99, 0.993), None)
+            line(MARGIN, y - row_h, PAGE_W - MARGIN, y - row_h, LINE, 0.4)
+            values = [
+                novelty.get("employee_name") or "-",
+                novelty.get("division") or "-",
+                novelty.get("role") or "-",
+                novelty.get("reason") or "-",
+                novelty.get("notes") or "-",
+            ]
+            x = MARGIN
+            for i, (value, width) in enumerate(zip(values, novelty_widths)):
+                size = 6.8 if i != 4 else 6.2
+                text(x + 4, y - 11.5, size, _pdf_truncate(value, width - 7, size), bold=(i == 0), color=TEXT)
+                x += width
+            y -= row_h
+        y -= 8
+
     if routes:
         for div in ("PUERTO MADRYN", "TRELEW"):
             subset = [r for r in routes if canonical(r.get("division")) == div]
@@ -3664,6 +3734,7 @@ def build_pdf_bytes(planning_date: str, division: str = "TODAS") -> bytes:
     else:
         text(MARGIN, y - 30, 13, "No hay salidas registradas para la selección.", True, MUTED)
 
+    draw_novelties()
     finish_page()
 
     # Assemble a compact PDF using built-in Type1 fonts and one JPEG image.
@@ -4439,6 +4510,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Disposition", f"attachment; filename=salida_whatsapp_{d}.png")
                     self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/export/whatsapp-choferes.png":
                     d = query.get("date", "")
@@ -4451,6 +4523,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Disposition", f"attachment; filename=salida_choferes_{d}.png")
                     self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/options":
                     self.send_json(options_for_routes(query.get("date", "")))
@@ -4493,6 +4566,7 @@ class Handler(BaseHTTPRequestHandler):
                     raw = body.encode("utf-8")
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                     self.wfile.write(raw)
                 elif path == "/api/export/daily.pdf":
@@ -4506,6 +4580,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "application/pdf")
                     self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
                     self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/export/mail.png":
                     d = query.get("date", "")
@@ -4517,6 +4592,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header("Content-Type", "image/png")
                     self.send_header("Content-Disposition", f"attachment; filename={png.name}")
                     self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
                     self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/backup/download":
                     backup = create_backup_zip()
@@ -4562,6 +4638,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Disposition", f"attachment; filename=salida_whatsapp_{d}.png")
                 self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers(); self.wfile.write(raw)
             elif path == "/api/export/whatsapp-choferes.png":
                 d = query.get("date", "")
@@ -4573,6 +4650,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Disposition", f"attachment; filename=salida_choferes_{d}.png")
                 self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers(); self.wfile.write(raw)
             elif path == "/api/options":
                 self.send_json(options_for_routes(query.get("date", "")))
@@ -4614,6 +4692,7 @@ class Handler(BaseHTTPRequestHandler):
                 raw = body.encode("utf-8")
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(raw)
             elif path == "/api/export/daily.pdf":
@@ -4626,6 +4705,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/pdf")
                 self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
                 self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(raw)
             elif path == "/api/export/mail.png":
@@ -4638,6 +4718,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "image/png")
                 self.send_header("Content-Disposition", f"attachment; filename={png.name}")
                 self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers(); self.wfile.write(raw)
             elif path == "/api/backup/download":
                 backup = create_backup_zip()
@@ -4720,6 +4801,22 @@ class Handler(BaseHTTPRequestHandler):
                 result = import_routes(all_rows)
                 register_audit_event(None, user, "Carga de archivo CHESS", "Planning CHESS", planning_date, ",".join(per_division), new_data={"processed": len(all_rows), "by_division": per_division}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "processed": len(all_rows), "by_division": per_division, **result, "routes": route_rows(planning_date), "summary": summary(planning_date)})
+            elif path == "/api/picking/upload-planilla":
+                planning_date = str(payload.get("date") or "").strip()
+                division = str(payload.get("division") or "").strip()
+                content = payload.get("content") or ""
+                filename = str(payload.get("filename") or "").strip()
+                if not planning_date:
+                    raise ValueError("Debe indicar la fecha operativa.")
+                if division not in ("TRELEW", "PUERTO MADRYN"):
+                    raise ValueError("División inválida.")
+                if not content:
+                    raise ValueError("Debe seleccionar un archivo PDF.")
+                require_base_access(user, division)
+                raw_b64 = content.split(",")[-1]
+                save_picking_planilla(division, planning_date, filename, raw_b64, user)
+                register_audit_event(None, user, "Carga de planilla de picking", "Picking DDV", planning_date, division, new_data={"filename": filename}, ip_address=self.client_ip())
+                self.send_json({"ok": True})
             elif path == "/api/whatsapp/save":
                 planning_date = payload.get("date", "")
                 require_base_access(user, payload.get("division", "TODAS"))
