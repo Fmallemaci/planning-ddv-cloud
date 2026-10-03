@@ -2036,8 +2036,8 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                     """,
                     (
                         str(row.get("employee_code", "") or ""), name, canonical(row.get("division")),
-                        "CHOFER" if row.get("can_driver") else "AYUDANTE", int(bool(row.get("active", True))),
-                        canonical(row.get("base_locality")), int(bool(row.get("can_driver"))), int(bool(row.get("can_helper"))),
+                        "CHOFER" if row.get("can_driver") else "AYUDANTE", active_value("employees", bool(row.get("active", True)), column="active"),
+                        canonical(row.get("base_locality")), active_value("employees", bool(row.get("can_driver")), column="can_driver"), active_value("employees", bool(row.get("can_helper")), column="can_helper"),
                     ),
                 )
             if clean_names:
@@ -2050,7 +2050,7 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                 if name and div:
                     con.execute(
                         "INSERT OR IGNORE INTO localities(name,division,sort_order,active) VALUES(?,?,?,?)",
-                        (name, div, int(row.get("sort_order", 99) or 99), int(bool(row.get("active", True)))),
+                        (name, div, int(row.get("sort_order", 99) or 99), active_value("localities", bool(row.get("active", True)), column="active")),
                     )
         elif table == "domain_people":
             con.execute("DELETE FROM vehicle_people")
@@ -2059,7 +2059,7 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                 if domain and name and role in {"CHOFER", "AYUDANTE"}:
                     con.execute(
                         "INSERT OR IGNORE INTO vehicle_people(domain,employee_name,role,priority,active) VALUES(?,?,?,?,?)",
-                        (domain, name, role, int(row.get("priority", 99) or 99), int(bool(row.get("active", True)))),
+                        (domain, name, role, int(row.get("priority", 99) or 99), active_value("vehicle_people", bool(row.get("active", True)), column="active")),
                     )
         elif table == "employee_filters":
             con.execute("DELETE FROM employee_locality_roles")
@@ -2071,8 +2071,8 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                         INSERT OR IGNORE INTO employee_locality_roles
                         (employee_name,division,locality,can_driver,can_helper,active) VALUES(?,?,?,?,?,?)
                         """,
-                        (name, div, locality, int(bool(row.get("can_driver"))),
-                         int(bool(row.get("can_helper"))), int(bool(row.get("active", True)))),
+                        (name, div, locality, active_value("employee_locality_roles", bool(row.get("can_driver")), column="can_driver"),
+                         active_value("employee_locality_roles", bool(row.get("can_helper")), column="can_helper"), active_value("employee_locality_roles", bool(row.get("active", True)), column="active")),
                     )
         else:
             raise ValueError("Maestro no permitido.")
