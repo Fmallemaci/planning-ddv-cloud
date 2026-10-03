@@ -1091,6 +1091,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE planning_routes ADD COLUMN whatsapp_observation TEXT DEFAULT ''")
         if not column_exists(con, "planning_routes", "kms"):
             con.execute("ALTER TABLE planning_routes ADD COLUMN kms REAL NOT NULL DEFAULT 0")
+        if not column_exists(con, "personnel_novelties", "load_status"):
+            con.execute("ALTER TABLE personnel_novelties ADD COLUMN load_status TEXT NOT NULL DEFAULT 'DEFINITIVA'")
 
         # Populate role flags from historical domain-role records.
         people = con.execute("SELECT name, primary_role FROM employees").fetchall()
@@ -1458,7 +1460,7 @@ def normalize_catalog_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def options_for_routes(planning_date: str) -> dict[str, Any]:
     with db() as con:
         novelty_names = {r[0] for r in con.execute(
-            "SELECT employee_name FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
+            "SELECT employee_name FROM personnel_novelties WHERE novelty_date=? AND reason<>''", (planning_date,)
         ).fetchall()}
         employees = [dict(r) for r in con.execute(
             f"SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE {active_condition('employees')} ORDER BY division,base_locality,name"
@@ -1496,7 +1498,7 @@ def validate_assignments(
     assignments: dict[str, dict[str, Any]] = {}
     with db() as con:
         novelty_names = {canonical(r[0]) for r in con.execute(
-            "SELECT employee_name FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
+            "SELECT employee_name FROM personnel_novelties WHERE novelty_date=? AND reason<>''", (planning_date,)
         ).fetchall()}
         role_map = {
             canonical(r["name"]): {
@@ -1889,6 +1891,13 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
         saved = {canonical(r["employee_name"]): dict(r) for r in con.execute(
             "SELECT * FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
         ).fetchall()}
+    # Keep previously saved people editable even after they become inactive.
+    staff = [dict(p) for p in staff]
+    staff_names = {canonical(p['name']) for p in staff}
+    for name, existing in saved.items():
+        if name not in staff_names and (not division or division == 'TODAS' or display_division(existing['division']) == display_division(division)):
+            staff.append({'name': name, 'division': existing['division'], 'base_locality': '',
+                          'can_driver': 'CHOFER' in existing['role'], 'can_helper': 'AYUDANTE' in existing['role']})
     output = []
     for p in staff:
         name = canonical(p["name"])
@@ -1899,37 +1908,56 @@ def unassigned(planning_date: str, division: str = "") -> list[dict[str, Any]]:
         output.append({
             "employee_name": name, "division": display_division(p["division"]), "base_locality": p["base_locality"],
             "role": role, "reason": existing.get("reason", ""), "notes": existing.get("notes", ""),
+            "load_status": existing.get("load_status", "PENDIENTE"),
         })
     return output
 
 
-def save_novelties(planning_date: str, rows: list[dict[str, Any]]) -> None:
+def save_novelties(planning_date: str, rows: list[dict[str, Any]], mode: str = "DEFINITIVA", division: str = "TODAS") -> None:
+    date.fromisoformat(planning_date)
+    mode = canonical(mode)
+    if mode not in {"PARCIAL", "DEFINITIVA"}:
+        raise ValueError("Seleccione carga parcial o definitiva.")
+    available = {canonical(r['employee_name']): r for r in unassigned(planning_date, division)}
+    submitted = {}
+    for row in rows:
+        name = canonical(row.get('employee_name'))
+        if not name or name not in available or name in submitted:
+            raise ValueError("El personal cambió o hay filas duplicadas. Vuelva a consultar las novedades.")
+        reason = canonical(row.get('reason'))
+        if reason and reason not in NOVELTY_REASONS:
+            raise ValueError(f"Debe seleccionar una novedad válida para {name}.")
+        submitted[name] = {**available[name], 'reason': reason, 'notes': str(row.get('notes') or '')}
+    if mode == 'DEFINITIVA':
+        pending = [name for name in available if not submitted.get(name, {}).get('reason')]
+        if pending:
+            raise ValueError(f"Falta definir la novedad de {len(pending)} empleados. Puede guardar una carga parcial.")
     assigned = {canonical(name) for r in route_rows(planning_date) for name in (r["driver"], r["helper1"], r["helper2"]) if canonical(name)}
     with db() as con:
-        for row in rows:
+        for row in submitted.values():
             name = canonical(row.get("employee_name"))
             reason = canonical(row.get("reason"))
             if not name:
                 continue
             if name in assigned:
                 raise ValueError(f"{name} está asignado a una salida y no puede registrar una novedad.")
-            if reason not in NOVELTY_REASONS:
+            if reason and reason not in NOVELTY_REASONS:
                 raise ValueError(f"Debe seleccionar una novedad válida para {name}.")
             con.execute(
                 """
-                INSERT INTO personnel_novelties(novelty_date,employee_name,division,role,reason,notes)
-                VALUES(?,?,?,?,?,?)
+                INSERT INTO personnel_novelties(novelty_date,employee_name,division,role,reason,notes,load_status)
+                VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(novelty_date,employee_name) DO UPDATE SET division=excluded.division,
-                    role=excluded.role,reason=excluded.reason,notes=excluded.notes
+                    role=excluded.role,reason=excluded.reason,notes=excluded.notes,load_status=excluded.load_status
                 """,
-                (planning_date, name, canonical(row.get("division")), canonical(row.get("role")), reason, str(row.get("notes", "") or "")),
+                (planning_date, name, canonical(row.get("division")), canonical(row.get("role")), reason, str(row.get("notes", "") or ""), mode),
             )
 
 
 def novelty_rows(planning_date: str) -> list[dict[str, Any]]:
     with db() as con:
         return [dict(r) for r in con.execute(
-            """SELECT * FROM personnel_novelties WHERE novelty_date=? ORDER BY CASE UPPER(TRIM(division)) WHEN 'TRELEW' THEN 1 WHEN 'PUERTO MADRYN' THEN 2 ELSE 3 END, employee_name""", (planning_date,)
+            """SELECT * FROM personnel_novelties WHERE novelty_date=? AND reason<>'' ORDER BY CASE UPPER(TRIM(division)) WHEN 'TRELEW' THEN 1 WHEN 'PUERTO MADRYN' THEN 2 ELSE 3 END, employee_name""", (planning_date,)
         ).fetchall()]
 
 
@@ -2159,7 +2187,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     if employee:
         query += " AND ? IN (driver,helper1,helper2)"; qparams.append(employee)
     query += " ORDER BY planning_date DESC,division,locality,domain LIMIT 5000"
-    nov_query = "SELECT novelty_date,employee_name,division,role,reason,notes FROM personnel_novelties WHERE novelty_date BETWEEN ? AND ?"
+    nov_query = "SELECT novelty_date,employee_name,division,role,reason,notes,load_status FROM personnel_novelties WHERE novelty_date BETWEEN ? AND ? AND reason<>''"
     nov_params: list[Any] = [start, end]
     if division and division != "TODAS":
         nov_query += " AND division=?"; nov_params.append(division)
@@ -4881,10 +4909,11 @@ class Handler(BaseHTTPRequestHandler):
                 register_audit_event(None, user, "Copia última asignación", "Planning CHESS", payload.get("date", ""), new_data={"copied": count}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "copied": count, "routes": route_rows(payload.get("date", ""))})
             elif path == "/api/novelties/save":
+                require_base_access(user, payload.get("division", "TODAS"))
                 for row in payload.get("rows", []):
                     require_base_access(user, row.get("division", ""))
-                save_novelties(payload.get("date", ""), payload.get("rows", []))
-                register_audit_event(None, user, "Modificación de novedades", "Novedades", payload.get("date", ""), new_data={"rows": len(payload.get("rows", []))}, ip_address=self.client_ip())
+                save_novelties(payload.get("date", ""), payload.get("rows", []), payload.get("mode", "DEFINITIVA"), payload.get("division", "TODAS"))
+                register_audit_event(None, user, "Modificación de novedades", "Novedades", payload.get("date", ""), payload.get("division", "TODAS"), new_data={"rows": len(payload.get("rows", [])), "mode": payload.get("mode", "DEFINITIVA")}, ip_address=self.client_ip())
                 self.send_json({"ok": True, "rows": novelty_rows(payload.get("date", ""))})
             elif path == "/api/masters/save":
                 require_role(user, "ADMINISTRADOR")
