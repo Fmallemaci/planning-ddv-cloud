@@ -1430,7 +1430,9 @@ def master_payload() -> dict[str, Any]:
         employees = [dict(r) for r in con.execute(
             "SELECT id,employee_code,name,division,base_locality,can_driver,can_helper,active FROM employees ORDER BY division,name"
         ).fetchall()]
-        localities = [dict(r) for r in con.execute(
+        # La pantalla usa TRELEW / PUERTO MADRYN; en Postgres se guarda TW / PM.
+        employees = normalize_catalog_rows(employees)
+        localities =[dict(r) for r in con.execute(
             "SELECT id,name,division,sort_order,active FROM localities ORDER BY division,sort_order,name"
         ).fetchall()]
         domain_people = [dict(r) for r in con.execute(
@@ -2049,24 +2051,32 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
     with db() as con:
         if table == "employees":
             clean_names = set()
+            has_full_name = bool(pg_column_type("employees", "full_name"))
             for row in rows:
                 name = canonical(row.get("name"))
                 if not name:
                     continue
                 clean_names.add(name)
+                columns = ["employee_code", "name", "division", "primary_role", "active", "base_locality", "can_driver", "can_helper"]
+                values: list[Any] = [
+                    str(row.get("employee_code", "") or ""), name, route_division_for_db(row.get("division")),
+                    "CHOFER" if row.get("can_driver") else "AYUDANTE", active_value("employees", bool(row.get("active", True)), column="active"),
+                    canonical(row.get("base_locality")), active_value("employees", bool(row.get("can_driver")), column="can_driver"), active_value("employees", bool(row.get("can_helper")), column="can_helper"),
+                ]
+                # La tabla employees de Supabase trae columnas heredadas (full_name NOT NULL, can_drive, can_assist).
+                if has_full_name:
+                    columns.append("full_name")
+                    values.append(name)
+                updates = ["employee_code", "division", "active", "base_locality", "can_driver", "can_helper", "primary_role"]
+                if has_full_name:
+                    updates.append("full_name")
                 con.execute(
-                    """
-                    INSERT INTO employees(employee_code,name,division,primary_role,active,base_locality,can_driver,can_helper)
-                    VALUES(?,?,?,?,?,?,?,?)
-                    ON CONFLICT(name) DO UPDATE SET employee_code=excluded.employee_code,division=excluded.division,
-                        active=excluded.active,base_locality=excluded.base_locality,can_driver=excluded.can_driver,
-                        can_helper=excluded.can_helper,primary_role=excluded.primary_role
+                    f"""
+                    INSERT INTO employees({",".join(columns)})
+                    VALUES({",".join("?" for _ in columns)})
+                    ON CONFLICT(name) DO UPDATE SET {",".join(f"{col}=excluded.{col}" for col in updates)}
                     """,
-                    (
-                        str(row.get("employee_code", "") or ""), name, canonical(row.get("division")),
-                        "CHOFER" if row.get("can_driver") else "AYUDANTE", active_value("employees", bool(row.get("active", True)), column="active"),
-                        canonical(row.get("base_locality")), active_value("employees", bool(row.get("can_driver")), column="can_driver"), active_value("employees", bool(row.get("can_helper")), column="can_helper"),
-                    ),
+                    tuple(values),
                 )
             if clean_names:
                 placeholders = ",".join("?" for _ in clean_names)
