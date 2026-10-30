@@ -1091,6 +1091,8 @@ def init_db() -> None:
             con.execute("ALTER TABLE planning_routes ADD COLUMN whatsapp_observation TEXT DEFAULT ''")
         if not column_exists(con, "planning_routes", "kms"):
             con.execute("ALTER TABLE planning_routes ADD COLUMN kms REAL NOT NULL DEFAULT 0")
+        if not column_exists(con, "planning_routes", "mayor_funcion"):
+            con.execute("ALTER TABLE planning_routes ADD COLUMN mayor_funcion INTEGER NOT NULL DEFAULT 0")
         if not column_exists(con, "personnel_novelties", "load_status"):
             con.execute("ALTER TABLE personnel_novelties ADD COLUMN load_status TEXT NOT NULL DEFAULT 'DEFINITIVA'")
 
@@ -1465,7 +1467,7 @@ def options_for_routes(planning_date: str) -> dict[str, Any]:
             "SELECT employee_name FROM personnel_novelties WHERE novelty_date=? AND reason<>''", (planning_date,)
         ).fetchall()}
         employees = [dict(r) for r in con.execute(
-            f"SELECT name,division,base_locality,can_driver,can_helper FROM employees WHERE {active_condition('employees')} ORDER BY division,base_locality,name"
+            f"SELECT name,division,base_locality,can_driver,can_helper,primary_role FROM employees WHERE {active_condition('employees')} ORDER BY division,base_locality,name"
         ).fetchall()]
         localities = [dict(r) for r in con.execute(
             f"SELECT name,division,sort_order FROM localities WHERE {active_condition('localities')} ORDER BY division,sort_order,name"
@@ -1650,7 +1652,7 @@ def save_routes(
         replacement = incoming.get(str(row.get("id") or "").strip())
         if replacement:
             updated = dict(row)
-            for field in ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms"):
+            for field in ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms", "mayor_funcion"):
                 updated[field] = replacement.get(field, updated.get(field))
             merged.append(updated)
         else:
@@ -1694,18 +1696,20 @@ def save_routes(
                 else:
                     next_data[field] = str(route.get(field, "") or "").strip()
             next_data["status"] = next_status
-            tracked = ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms", "status")
+            next_data["mayor_funcion"] = mayor_funcion_value(route) if "mayor_funcion" in route else int(previous.get("mayor_funcion") or 0)
+            tracked = ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms", "mayor_funcion", "status")
             changed = {field: {"anterior": previous.get(field), "nuevo": next_data.get(field)} for field in tracked if str(previous.get(field) or "") != str(next_data.get(field) or "")}
             con.execute(
                 """
                 UPDATE planning_routes SET rendicion=?,driver=?,helper1=?,helper2=?,locality=?,
-                    observations=?,recarga_qty=?,kms=?,status=?,updated_at=? WHERE id=? AND planning_date=?
+                    observations=?,recarga_qty=?,kms=?,mayor_funcion=?,status=?,updated_at=? WHERE id=? AND planning_date=?
                 """,
                 (
                     str(route.get("rendicion", "") or "").strip(), canonical(route.get("driver")),
                     canonical(route.get("helper1")), canonical(route.get("helper2")), canonical(route.get("locality")),
                     str(route.get("observations", "") or "").strip(), int(route.get("recarga_qty", 0) or 0),
                     safe_number(route.get("kms")) if canonical(route.get("locality")) == "SIERRA GRANDE" else 0,
+                    next_data["mayor_funcion"],
                     next_status, datetime.now().isoformat(timespec="seconds"),
                     route_id, planning_date,
                 ),
@@ -1731,6 +1735,11 @@ def save_routes(
                     },
                     ip_address=ip_address,
                 )
+
+
+def mayor_funcion_value(route: dict[str, Any]) -> int:
+    """Adicional Mayor Función: solo cuenta si la salida tiene chofer asignado."""
+    return 1 if truthy(route.get("mayor_funcion")) and canonical(route.get("driver")) else 0
 
 
 def confirmed_status(value: Any) -> bool:
@@ -2178,7 +2187,8 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
             SELECT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
                    {PG_ROUTE_EFFECTIVE_DIVISION} division,
                    pr.domain,pr.unit_id,pr.pdv,pr.bultos,pr.rendicion,pr.driver,pr.helper1,pr.helper2,
-                   pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status
+                   pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status,
+                   COALESCE(pr.mayor_funcion,0) mayor_funcion
             FROM planning_routes pr
             {PG_ROUTE_DAY_JOINS}
             WHERE {PG_ROUTE_EFFECTIVE_DATE} BETWEEN ? AND ?
@@ -2186,7 +2196,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     else:
         query = """
             SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
-                   locality,observations,recarga_qty,kms,status
+                   locality,observations,recarga_qty,kms,status,COALESCE(mayor_funcion,0) mayor_funcion
             FROM planning_routes WHERE planning_date BETWEEN ? AND ?
         """
     qparams: list[Any] = [start, end]
@@ -2242,8 +2252,12 @@ def month_bounds(month: str) -> tuple[str, str, str]:
 def clients_bultos_report(params: dict[str, str]) -> dict[str, Any]:
     """Clientes (PDV) y bultos de un mes: totales por base, por camión y detalle por día."""
     month, start, end = month_bounds(params.get("month", ""))
-    division = canonical(params.get("division", "")) or "TODAS"
-    include_cyo = truthy(params.get("include_cyo"))
+    report = clients_bultos_range(start, end, params.get("division", ""), truthy(params.get("include_cyo")))
+    return {"month": month, **report}
+
+
+def clients_bultos_range(start: str, end: str, division: str = "", include_cyo: bool = False) -> dict[str, Any]:
+    division = canonical(division) or "TODAS"
     routes = history_rows({"start": start, "end": end, "division": division})["routes"]
     if not include_cyo:
         routes = [r for r in routes if not is_cyo_route(r)]
@@ -2318,7 +2332,6 @@ def clients_bultos_report(params: dict[str, str]) -> dict[str, Any]:
     by_day.sort(key=lambda r: (r["date"], r["division"]), reverse=True)
 
     return {
-        "month": month,
         "start": start,
         "end": end,
         "division": division,
@@ -2341,6 +2354,201 @@ def clients_bultos_csv(report: dict[str, Any]) -> bytes:
                 _fmt_ar(d["pdv"]), _fmt_ar(d["bultos"], 1), _fmt_ar(d["drop_size"], 1), d["status"],
             ])
     return output.getvalue().encode("utf-8-sig")
+
+
+def _date_range_or_default(start: str, end: str) -> tuple[str, str]:
+    try:
+        start_d = date.fromisoformat(str(start or "")[:10])
+        end_d = date.fromisoformat(str(end or "")[:10])
+    except ValueError:
+        start_s, end_s, _ = recarga_period(date.today())
+        return start_s, end_s
+    if start_d > end_d:
+        raise ValueError("La fecha Desde no puede ser posterior a la fecha Hasta.")
+    return start_d.isoformat(), end_d.isoformat()
+
+
+def mayor_funcion_rows(params: dict[str, str]) -> dict[str, Any]:
+    """Salidas donde un ayudante hizo de chofer (Adicional Mayor Función), con resumen por empleado."""
+    start, end = _date_range_or_default(params.get("start", ""), params.get("end", ""))
+    division = canonical(params.get("division", "")) or "TODAS"
+    routes = history_rows({"start": start, "end": end, "division": division})["routes"]
+    detail = [
+        {
+            "date": r["planning_date"],
+            "employee_name": canonical(r.get("driver")),
+            "division": r["division"],
+            "domain": r.get("domain") or "",
+            "locality": r.get("locality") or "",
+            "helpers": " / ".join(x for x in (r.get("helper1"), r.get("helper2")) if x),
+            "status": r.get("status") or "",
+        }
+        for r in routes
+        if truthy(r.get("mayor_funcion")) and canonical(r.get("driver"))
+    ]
+    detail.sort(key=lambda x: (x["date"], x["division"], x["employee_name"]))
+    summary_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in detail:
+        acc = summary_map.setdefault((row["employee_name"], row["division"]), {"employee_name": row["employee_name"], "division": row["division"], "dates": set(), "salidas": 0})
+        acc["dates"].add(row["date"])
+        acc["salidas"] += 1
+    summary = []
+    for acc in summary_map.values():
+        dates = sorted(acc.pop("dates"))
+        summary.append({**acc, "dias": len(dates), "dates": dates})
+    summary.sort(key=lambda x: (-x["dias"], x["employee_name"]))
+    period_start, period_end, period_label = recarga_period(date.fromisoformat(start))
+    label = period_label if (start, end) == (period_start, period_end) else f"{date.fromisoformat(start).strftime('%d/%m/%Y')} al {date.fromisoformat(end).strftime('%d/%m/%Y')}"
+    return {"start": start, "end": end, "division": division, "label": label, "summary": summary, "detail": detail}
+
+
+def mayor_funcion_csv(data: dict[str, Any]) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(["EMPLEADO", "BASE", "DIAS", "SALIDAS", "FECHAS"])
+    for r in data["summary"]:
+        writer.writerow([r["employee_name"], r["division"], r["dias"], r["salidas"], ", ".join(date.fromisoformat(d).strftime("%d/%m") for d in r["dates"])])
+    writer.writerow([])
+    writer.writerow(["FECHA", "EMPLEADO", "BASE", "CAMION", "LOCALIDAD", "AYUDANTES", "ESTADO"])
+    for r in data["detail"]:
+        writer.writerow([r["date"], r["employee_name"], r["division"], r["domain"], r["locality"], r["helpers"], r["status"]])
+    return output.getvalue().encode("utf-8-sig")
+
+
+def _report_table_html(headers: list[str], rows: list[list[Any]]) -> str:
+    th = "".join(f"<th style='background:#0b2a4a;color:#fff;padding:6px 10px;text-align:left;font-size:12px'>{html.escape(str(h))}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td style='border-bottom:1px solid #dde4ea;padding:6px 10px;font-size:12px'>{html.escape(str(v))}</td>" for v in row) + "</tr>"
+        for row in rows
+    ) or f"<tr><td colspan='{len(headers)}' style='padding:10px;color:#777'>Sin registros.</td></tr>"
+    return f"<table style='border-collapse:collapse;width:100%;margin:6px 0 18px'><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _report_mail_html(title: str, subtitle: str, sections: list[tuple[str, str]]) -> str:
+    parts = "".join(f"<h3 style='color:#0b2a4a;margin:18px 0 4px'>{html.escape(h)}</h3>{body}" for h, body in sections)
+    return (
+        "<html><body style='font-family:Segoe UI,Arial,sans-serif;color:#1d2b36'>"
+        f"<h2 style='color:#0b2a4a;margin-bottom:2px'>{html.escape(title)}</h2>"
+        f"<div style='color:#5b6b78;margin-bottom:10px'>{html.escape(subtitle)}</div>{parts}"
+        "<div style='color:#8a99a5;font-size:11px;margin-top:20px'>Generado por Planning DDV.</div></body></html>"
+    )
+
+
+def build_report_eml(subject: str, html_body: str, filename: str, attachment: tuple[str, bytes] | None = None, to: str = "") -> tuple[str, bytes]:
+    """Borrador .eml listo para abrir en Outlook (doble clic) y enviar."""
+    root = MIMEMultipart("mixed")
+    root["X-Unsent"] = "1"
+    root["Date"] = formatdate(localtime=True)
+    if to:
+        root["To"] = _format_address_list(to)
+    root["Subject"] = subject
+    root.attach(MIMEText(html_body, "html", "utf-8"))
+    if attachment:
+        name, data = attachment
+        part = MIMEApplication(data, _subtype="octet-stream", name=name)
+        part.add_header("Content-Disposition", "attachment", filename=name)
+        root.attach(part)
+    return filename, root.as_bytes(policy=policy.SMTP)
+
+
+def mayor_funcion_eml(params: dict[str, str]) -> tuple[str, bytes]:
+    data = mayor_funcion_rows(params)
+    base = "TW + PM" if data["division"] == "TODAS" else data["division"]
+    summary = _report_table_html(
+        ["Empleado", "Base", "Días", "Fechas"],
+        [[r["employee_name"], r["division"], r["dias"], ", ".join(date.fromisoformat(d).strftime("%d/%m") for d in r["dates"])] for r in data["summary"]],
+    )
+    detail = _report_table_html(
+        ["Fecha", "Empleado", "Base", "Camión", "Localidad", "Ayudantes"],
+        [[date.fromisoformat(r["date"]).strftime("%d/%m/%Y"), r["employee_name"], r["division"], r["domain"], r["locality"], r["helpers"]] for r in data["detail"]],
+    )
+    body = _report_mail_html(
+        "Adicional Mayor Función",
+        f"Período {data['label']} · {base} · ayudantes que cumplieron función de chofer",
+        [("Resumen por empleado", summary), ("Detalle", detail)],
+    )
+    stamp = data["start"].replace("-", "")
+    return build_report_eml(
+        f"Adicional Mayor Función - {data['label']} - {base}",
+        body,
+        f"mayor_funcion_{stamp}.eml",
+        (f"mayor_funcion_{data['start']}_{data['end']}.csv", mayor_funcion_csv(data)),
+        params.get("to", ""),
+    )
+
+
+def week_bounds(reference: str) -> tuple[str, str]:
+    try:
+        ref = date.fromisoformat(str(reference or "")[:10])
+    except ValueError:
+        ref = date.today()
+    monday = ref - timedelta(days=ref.weekday())
+    return monday.isoformat(), (monday + timedelta(days=6)).isoformat()
+
+
+def weekly_summary(params: dict[str, str]) -> dict[str, Any]:
+    """Resumen de la semana (lunes a domingo): salidas, clientes, bultos, novedades, recargas y mayor función, con la semana anterior para comparar."""
+    start, end = week_bounds(params.get("date", ""))
+    division = canonical(params.get("division", "")) or "TODAS"
+    current = clients_bultos_range(start, end, division)
+    prev_start = (date.fromisoformat(start) - timedelta(days=7)).isoformat()
+    prev_end = (date.fromisoformat(end) - timedelta(days=7)).isoformat()
+    previous = clients_bultos_range(prev_start, prev_end, division)
+    hist = history_rows({"start": start, "end": end, "division": division})
+    novelties: dict[tuple[str, str], int] = {}
+    for n in hist["novelties"]:
+        key = (display_division(n.get("division")), canonical(n.get("reason")))
+        novelties[key] = novelties.get(key, 0) + 1
+    try:
+        recargas = recarga_rows(start, end, division)["summary"]
+    except Exception:
+        recargas = []
+    mayor = mayor_funcion_rows({"start": start, "end": end, "division": division})
+    by_day = [{k: v for k, v in d.items() if k != "detail"} for d in current["by_day"]]
+    return {
+        "start": start,
+        "end": end,
+        "division": division,
+        "bases": current["bases"],
+        "total": current["total"],
+        "previous": {"start": prev_start, "end": prev_end, "bases": previous["bases"], "total": previous["total"]},
+        "by_day": by_day,
+        "novelties": [{"division": k[0], "reason": k[1], "count": v} for k, v in sorted(novelties.items())],
+        "recargas": [{"employee_name": r["employee_name"], "division": r["division"], "recargas": safe_number(r.get("recargas"))} for r in recargas],
+        "mayor_funcion": mayor["summary"],
+    }
+
+
+def _variation(now: float, before: float) -> str:
+    if not before:
+        return "-"
+    pct = (now - before) / before * 100
+    return f"{'+' if pct >= 0 else ''}{_fmt_ar(pct, 1)}%"
+
+
+def weekly_summary_eml(params: dict[str, str]) -> tuple[str, bytes]:
+    data = weekly_summary(params)
+    fmt_d = lambda d: date.fromisoformat(d).strftime("%d/%m/%Y")
+    base = "TW + PM" if data["division"] == "TODAS" else data["division"]
+    prev_by_base = {b["division"]: b for b in data["previous"]["bases"]}
+    rows = []
+    for b in data["bases"] + ([{"division": "TOTAL DDV", **data["total"]}] if len(data["bases"]) > 1 else []):
+        prev = data["previous"]["total"] if b["division"] == "TOTAL DDV" else prev_by_base.get(b["division"], {})
+        rows.append([b["division"], b["days"], b["salidas"], _fmt_ar(b["pdv"]), _fmt_ar(b["bultos"], 1), _fmt_ar(b["drop_size"], 1), _variation(b["bultos"], safe_number(prev.get("bultos")))])
+    sections = [
+        ("Totales de la semana", _report_table_html(["Base", "Días", "Salidas", "Clientes", "Bultos", "Drop size", "Bultos vs semana anterior"], rows)),
+        ("Por día", _report_table_html(["Fecha", "Base", "Camiones", "Clientes", "Bultos", "Drop size"], [[fmt_d(d["date"]), d["division"], d["trucks"], _fmt_ar(d["pdv"]), _fmt_ar(d["bultos"], 1), _fmt_ar(d["drop_size"], 1)] for d in sorted(data["by_day"], key=lambda x: (x["date"], x["division"]))])),
+        ("Novedades de personal", _report_table_html(["Base", "Novedad", "Cantidad"], [[n["division"], n["reason"], n["count"]] for n in data["novelties"]])),
+        ("Recargas", _report_table_html(["Empleado", "Base", "Recargas"], [[r["employee_name"], r["division"], _fmt_ar(r["recargas"])] for r in data["recargas"]])),
+        ("Adicional Mayor Función", _report_table_html(["Empleado", "Base", "Días"], [[r["employee_name"], r["division"], r["dias"]] for r in data["mayor_funcion"]])),
+    ]
+    body = _report_mail_html("Resumen semanal DDV", f"Semana del {fmt_d(data['start'])} al {fmt_d(data['end'])} · {base} · sin CYO", sections)
+    return build_report_eml(
+        f"Resumen semanal DDV - {fmt_d(data['start'])} al {fmt_d(data['end'])} - {base}",
+        body,
+        f"resumen_semanal_{data['start'].replace('-', '')}.eml",
+        to=params.get("to", ""),
+    )
 
 
 def is_cyo_route(route: dict[str, Any]) -> bool:
@@ -4697,6 +4905,26 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(master_payload())
                 elif path == "/api/history":
                     self.send_json(history_rows(query))
+                elif path == "/api/mayor-funcion":
+                    self.send_json(mayor_funcion_rows(query))
+                elif path in {"/api/mayor-funcion.csv", "/api/mayor-funcion/mail.eml", "/api/reports/weekly/mail.eml"}:
+                    if path == "/api/mayor-funcion.csv":
+                        data = mayor_funcion_rows(query)
+                        filename, raw, ctype = f"mayor_funcion_{data['start']}_{data['end']}.csv", mayor_funcion_csv(data), "text/csv; charset=utf-8"
+                        action = "Exportación CSV mayor función"
+                    elif path == "/api/mayor-funcion/mail.eml":
+                        (filename, raw), ctype, action = mayor_funcion_eml(query), "message/rfc822", "Borrador mail mayor función"
+                    else:
+                        (filename, raw), ctype, action = weekly_summary_eml(query), "message/rfc822", "Borrador mail resumen semanal"
+                    register_audit_event(None, user, action, "Reportes", query.get("start", query.get("date", "")), query.get("division", "TODAS"), ip_address=self.client_ip())
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers(); self.wfile.write(raw)
+                elif path == "/api/reports/weekly":
+                    self.send_json(weekly_summary(query))
                 elif path == "/api/reports/clients-bultos":
                     self.send_json(clients_bultos_report(query))
                 elif path == "/api/reports/clients-bultos.csv":
