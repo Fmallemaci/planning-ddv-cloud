@@ -50,6 +50,11 @@ try:
 except Exception:  # pragma: no cover - optional unless PostgreSQL is configured.
     psycopg = None
 
+# Fechas y horas siempre en hora argentina, aunque el servidor (Render) corra en UTC.
+os.environ.setdefault("TZ", "America/Argentina/Buenos_Aires")
+if hasattr(time, "tzset"):
+    time.tzset()
+
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "data" / "operations_ddv.db"
 WEB_DIR = APP_DIR / "web"
@@ -4477,7 +4482,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/":
                 self.send_file(WEB_DIR / "index.html", "text/html; charset=utf-8")
             elif path.startswith("/assets/"):
-                asset = WEB_DIR / path.lstrip("/")
+                assets_dir = (WEB_DIR / "assets").resolve()
+                asset = (WEB_DIR / path.lstrip("/")).resolve()
+                if not asset.is_relative_to(assets_dir) or not asset.is_file():
+                    self.send_error(404)
+                    return
                 content_type = "image/png" if asset.suffix.lower() == ".png" else "application/octet-stream"
                 self.send_file(asset, content_type)
             elif path == "/api/health":
@@ -4658,127 +4667,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_error(404)
                 return
-            elif path == "/api/dates":
-                self.send_json({"dates": dates_list()})
-            elif path == "/api/routes":
-                d = query.get("date", "")
-                self.send_json({"routes": route_rows(d, query.get("division", "")), "summary": summary(d) if d else {}})
-            elif path == "/api/whatsapp":
-                d = query.get("date", "")
-                self.send_json({"rows": whatsapp_rows(d, query.get("division", "TODAS"))})
-            elif path == "/api/export/whatsapp.png":
-                d = query.get("date", "")
-                if not d:
-                    raise ValueError("Debe seleccionar una fecha.")
-                png = render_whatsapp_image(d, query.get("division", "TODAS"))
-                raw = png.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Disposition", f"attachment; filename=salida_whatsapp_{d}.png")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers(); self.wfile.write(raw)
-            elif path == "/api/export/whatsapp-choferes.png":
-                d = query.get("date", "")
-                if not d:
-                    raise ValueError("Debe seleccionar una fecha.")
-                png = render_whatsapp_drivers_image(d, query.get("division", "TODAS"))
-                raw = png.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Disposition", f"attachment; filename=salida_choferes_{d}.png")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers(); self.wfile.write(raw)
-            elif path == "/api/options":
-                self.send_json(options_for_routes(query.get("date", "")))
-            elif path == "/api/summary":
-                self.send_json(summary(query.get("date", "")))
-            elif path == "/api/unassigned":
-                self.send_json({"rows": unassigned(query.get("date", ""), query.get("division", "")), "reasons": NOVELTY_REASONS})
-            elif path == "/api/novelties":
-                self.send_json({"rows": novelty_rows(query.get("date", ""))})
-            elif path == "/api/recargas":
-                today = date.today().isoformat()
-                start = query.get("start") or query.get("date") or today
-                end = query.get("end") or start
-                self.send_json(recarga_rows(start, end, query.get("division", "")))
-            elif path == "/api/kms":
-                today = date.today().isoformat()
-                self.send_json(kms_rows(query.get("start") or today, query.get("end") or today, query.get("division", "TODAS")))
-            elif path == "/api/masters":
-                self.send_json(master_payload())
-            elif path == "/api/history":
-                self.send_json(history_rows(query))
-            elif path == "/api/history/export.pdf":
-                pdf = generate_history_pdf(query, query.get("section", "routes"))
-                raw = pdf.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers()
-                self.wfile.write(raw)
-            elif path == "/api/mail/capabilities":
-                self.send_json({
-                    "direct_outlook": platform.system() == "Windows",
-                    "server_platform": platform.system(),
-                })
-            elif path == "/api/mail/preview":
-                body = mail_html(query.get("date", ""), query.get("division", "TODAS"), preview=True)
-                self.send_response(200)
-                raw = body.encode("utf-8")
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(raw)
-            elif path == "/api/export/daily.pdf":
-                d = query.get("date", "")
-                if not d:
-                    raise ValueError("Debe seleccionar una fecha para generar el PDF.")
-                pdf = generate_pdf(d, query.get("division", "TODAS"))
-                raw = pdf.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/pdf")
-                self.send_header("Content-Disposition", f"attachment; filename={pdf.name}")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(raw)
-            elif path == "/api/export/mail.png":
-                d = query.get("date", "")
-                if not d:
-                    raise ValueError("Debe seleccionar una fecha para generar la imagen.")
-                png = render_mail_image(d, query.get("division", "TODAS"))
-                raw = png.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Disposition", f"attachment; filename={png.name}")
-                self.send_header("Content-Length", str(len(raw)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers(); self.wfile.write(raw)
-            elif path == "/api/backup/download":
-                backup = create_backup_zip()
-                raw = backup.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/zip")
-                self.send_header("Content-Disposition", f"attachment; filename={backup.name}")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers(); self.wfile.write(raw)
-            elif path == "/api/export/daily.csv":
-                d = query.get("date", "")
-                output = io.StringIO()
-                writer = csv.writer(output, delimiter=";")
-                writer.writerow(["FECHA","DIVISION","UNIDAD","DOMINIO","PDV","BULTOS","RENDICION","CHOFER","AYUDANTE 1","AYUDANTE 2","LOCALIDAD","OBSERVACIONES"])
-                for r in route_rows(d):
-                    writer.writerow([d,r["division"],r["unit_id"],r["domain"],r["pdv"],r["bultos"],r["rendicion"],r["driver"],r["helper1"],r["helper2"],r["locality"],r["observations"]])
-                raw = output.getvalue().encode("utf-8-sig")
-                self.send_response(200)
-                self.send_header("Content-Type", "text/csv; charset=utf-8")
-                self.send_header("Content-Disposition", f"attachment; filename=salida_diaria_{d}.csv")
-                self.send_header("Content-Length", str(len(raw)))
-                self.end_headers(); self.wfile.write(raw)
             else:
                 self.send_error(404)
         except PermissionError as exc:
