@@ -2229,6 +2229,120 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     return {"routes": routes, "novelties": novelties, "indicators": indicators}
 
 
+def month_bounds(month: str) -> tuple[str, str, str]:
+    """Devuelve (YYYY-MM, primer día, último día) de un mes; si viene vacío o inválido, usa el mes actual."""
+    try:
+        first = datetime.strptime(str(month or "").strip()[:7], "%Y-%m").date()
+    except ValueError:
+        first = date.today().replace(day=1)
+    next_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+    return first.strftime("%Y-%m"), first.isoformat(), (next_month - timedelta(days=1)).isoformat()
+
+
+def clients_bultos_report(params: dict[str, str]) -> dict[str, Any]:
+    """Clientes (PDV) y bultos de un mes: totales por base, por camión y detalle por día."""
+    month, start, end = month_bounds(params.get("month", ""))
+    division = canonical(params.get("division", "")) or "TODAS"
+    include_cyo = truthy(params.get("include_cyo"))
+    routes = history_rows({"start": start, "end": end, "division": division})["routes"]
+    if not include_cyo:
+        routes = [r for r in routes if not is_cyo_route(r)]
+    routes.sort(key=lambda r: (r["planning_date"], r["division"], r["domain"]))
+
+    def blank() -> dict[str, Any]:
+        return {"salidas": 0, "pdv": 0.0, "bultos": 0.0, "days": set()}
+
+    def add(acc: dict[str, Any], r: dict[str, Any]) -> None:
+        acc["salidas"] += 1
+        acc["pdv"] += safe_number(r.get("pdv"))
+        acc["bultos"] += safe_number(r.get("bultos"))
+        acc["days"].add(r["planning_date"])
+
+    def close(acc: dict[str, Any]) -> dict[str, Any]:
+        days = len(acc.pop("days"))
+        salidas = acc["salidas"]
+        acc.update(
+            days=days,
+            drop_size=acc["bultos"] / acc["pdv"] if acc["pdv"] else 0,
+            pdv_per_salida=acc["pdv"] / salidas if salidas else 0,
+            bultos_per_salida=acc["bultos"] / salidas if salidas else 0,
+        )
+        return acc
+
+    bases: dict[str, dict[str, Any]] = {}
+    total = blank()
+    trucks: dict[tuple[str, str], dict[str, Any]] = {}
+    days: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in routes:
+        base = r["division"]
+        add(bases.setdefault(base, blank()), r)
+        add(total, r)
+        truck = trucks.setdefault((base, r["domain"]), {**blank(), "drivers": {}})
+        add(truck, r)
+        driver = str(r.get("driver") or "").strip() or "SIN CHOFER"
+        truck["drivers"][driver] = truck["drivers"].get(driver, 0) + 1
+        day = days.setdefault((r["planning_date"], base), {**blank(), "trucks": set(), "detail": []})
+        add(day, r)
+        day["trucks"].add(r["domain"])
+        day["detail"].append({
+            "domain": r["domain"],
+            "driver": r.get("driver") or "",
+            "helper1": r.get("helper1") or "",
+            "helper2": r.get("helper2") or "",
+            "locality": r.get("locality") or "",
+            "pdv": safe_number(r.get("pdv")),
+            "bultos": safe_number(r.get("bultos")),
+            "drop_size": safe_number(r.get("bultos")) / safe_number(r.get("pdv")) if safe_number(r.get("pdv")) else 0,
+            "status": r.get("status") or "",
+        })
+
+    by_truck = []
+    for (base, domain), acc in trucks.items():
+        drivers = acc.pop("drivers")
+        row = close(acc)
+        row.update(
+            division=base,
+            domain=domain,
+            drivers=[{"name": n, "salidas": c} for n, c in sorted(drivers.items(), key=lambda x: (-x[1], x[0]))],
+        )
+        by_truck.append(row)
+    by_truck.sort(key=lambda r: (r["division"], -r["bultos"]))
+
+    by_day = []
+    for (day, base), acc in days.items():
+        trucks_count = len(acc.pop("trucks"))
+        detail = sorted(acc.pop("detail"), key=lambda x: -x["bultos"])
+        row = close(acc)
+        row.update(date=day, division=base, trucks=trucks_count, detail=detail)
+        by_day.append(row)
+    by_day.sort(key=lambda r: (r["date"], r["division"]), reverse=True)
+
+    return {
+        "month": month,
+        "start": start,
+        "end": end,
+        "division": division,
+        "include_cyo": include_cyo,
+        "bases": [{"division": b, **close(acc)} for b, acc in sorted(bases.items())],
+        "total": close(total),
+        "by_truck": by_truck,
+        "by_day": by_day,
+    }
+
+
+def clients_bultos_csv(report: dict[str, Any]) -> bytes:
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerow(["FECHA", "BASE", "DOMINIO", "CHOFER", "AYUDANTE 1", "AYUDANTE 2", "LOCALIDAD", "CLIENTES", "BULTOS", "DROP SIZE", "ESTADO"])
+    for day in sorted(report["by_day"], key=lambda r: (r["date"], r["division"])):
+        for d in day["detail"]:
+            writer.writerow([
+                day["date"], day["division"], d["domain"], d["driver"], d["helper1"], d["helper2"], d["locality"],
+                _fmt_ar(d["pdv"]), _fmt_ar(d["bultos"], 1), _fmt_ar(d["drop_size"], 1), d["status"],
+            ])
+    return output.getvalue().encode("utf-8-sig")
+
+
 def is_cyo_route(route: dict[str, Any]) -> bool:
     return bool(re.search(r"(^|\s)CYO($|\s)", f"{route.get('domain','')} {route.get('locality','')} {route.get('observations','')}", re.I))
 
@@ -4583,6 +4697,17 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(master_payload())
                 elif path == "/api/history":
                     self.send_json(history_rows(query))
+                elif path == "/api/reports/clients-bultos":
+                    self.send_json(clients_bultos_report(query))
+                elif path == "/api/reports/clients-bultos.csv":
+                    report = clients_bultos_report(query)
+                    raw = clients_bultos_csv(report)
+                    register_audit_event(None, user, "Exportación CSV clientes y bultos", "Histórico", report["start"], report["division"], ip_address=self.client_ip())
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f"attachment; filename=clientes_bultos_{report['month']}_{report['division'].replace(' ', '_')}.csv")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers(); self.wfile.write(raw)
                 elif path == "/api/history/export.pdf":
                     pdf = generate_history_pdf(query, query.get("section", "routes"))
                     register_audit_event(None, user, "Exportación histórico PDF", "Histórico", query.get("start", ""), query.get("division", "TODAS"), ip_address=self.client_ip())
