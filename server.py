@@ -1701,7 +1701,10 @@ def save_routes(
                 else:
                     next_data[field] = str(route.get(field, "") or "").strip()
             next_data["status"] = next_status
-            next_data["mayor_funcion"] = mayor_funcion_value(route) if "mayor_funcion" in route else int(previous.get("mayor_funcion") or 0)
+            previous_mf = int(previous.get("mayor_funcion") or 0)
+            next_data["mayor_funcion"] = mayor_funcion_value(route) if "mayor_funcion" in route else previous_mf
+            if next_data["mayor_funcion"] == 0 and previous_mf == MAYOR_FUNCION_DESCARTADO:
+                next_data["mayor_funcion"] = MAYOR_FUNCION_DESCARTADO
             tracked = ("rendicion", "driver", "helper1", "helper2", "locality", "observations", "recarga_qty", "kms", "mayor_funcion", "status")
             changed = {field: {"anterior": previous.get(field), "nuevo": next_data.get(field)} for field in tracked if str(previous.get(field) or "") != str(next_data.get(field) or "")}
             con.execute(
@@ -1742,9 +1745,42 @@ def save_routes(
                 )
 
 
+# planning_routes.mayor_funcion: 1 = confirmado, 0 = sin marcar, -1 = sugerencia descartada.
+MAYOR_FUNCION_DESCARTADO = -1
+
+
 def mayor_funcion_value(route: dict[str, Any]) -> int:
     """Adicional Mayor Función: solo cuenta si la salida tiene chofer asignado."""
-    return 1 if truthy(route.get("mayor_funcion")) and canonical(route.get("driver")) else 0
+    try:
+        marked = int(route.get("mayor_funcion") or 0) == 1
+    except (TypeError, ValueError):
+        marked = truthy(route.get("mayor_funcion"))
+    return 1 if marked and canonical(route.get("driver")) else 0
+
+
+def set_mayor_funcion(route_id: Any, value: int, user: dict[str, Any], ip_address: str = "") -> dict[str, Any]:
+    """Confirma (1), descarta (-1) o limpia (0) el adicional de una salida."""
+    if value not in (1, 0, MAYOR_FUNCION_DESCARTADO):
+        raise ValueError("Valor de mayor función inválido.")
+    with db() as con:
+        row = con.execute("SELECT * FROM planning_routes WHERE id=?", (str(route_id),)).fetchone()
+        if not row:
+            raise ValueError("La salida ya no existe.")
+        route = normalize_route_output(dict(row))
+        require_base_access(user, route["division"])
+        if value == 1 and not canonical(route.get("driver")):
+            raise ValueError("La salida no tiene chofer asignado.")
+        previous = int(route.get("mayor_funcion") or 0)
+        con.execute("UPDATE planning_routes SET mayor_funcion=?, updated_at=? WHERE id=?", (value, now_iso(), str(route_id)))
+        register_audit_event(
+            con, user,
+            {1: "Confirmación mayor función", 0: "Limpieza mayor función", MAYOR_FUNCION_DESCARTADO: "Descarte mayor función"}[value],
+            "Mayor función", route["planning_date"], route["division"], "planning_routes", str(route_id),
+            previous_data={"mayor_funcion": previous},
+            new_data={"mayor_funcion": value, "chofer": route.get("driver"), "ruta": route.get("domain")},
+            ip_address=ip_address,
+        )
+    return {"id": str(route_id), "mayor_funcion": value}
 
 
 def confirmed_status(value: Any) -> bool:
@@ -2189,7 +2225,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     employee = canonical(params.get("employee", ""))
     if postgres_enabled():
         query = f"""
-            SELECT {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
+            SELECT pr.id, {PG_ROUTE_EFFECTIVE_DATE}::text planning_date,
                    {PG_ROUTE_EFFECTIVE_DIVISION} division,
                    pr.domain,pr.unit_id,pr.pdv,pr.bultos,pr.rendicion,pr.driver,pr.helper1,pr.helper2,
                    pr.locality,pr.observations,pr.recarga_qty,pr.kms,pr.status,
@@ -2200,7 +2236,7 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
         """
     else:
         query = """
-            SELECT planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
+            SELECT id,planning_date,division,domain,unit_id,pdv,bultos,rendicion,driver,helper1,helper2,
                    locality,observations,recarga_qty,kms,status,COALESCE(mayor_funcion,0) mayor_funcion
             FROM planning_routes WHERE planning_date BETWEEN ? AND ?
         """
@@ -2380,6 +2416,7 @@ def mayor_funcion_rows(params: dict[str, str]) -> dict[str, Any]:
     routes = history_rows({"start": start, "end": end, "division": division})["routes"]
     detail = [
         {
+            "id": str(r.get("id")),
             "date": r["planning_date"],
             "employee_name": canonical(r.get("driver")),
             "division": r["division"],
@@ -2389,7 +2426,7 @@ def mayor_funcion_rows(params: dict[str, str]) -> dict[str, Any]:
             "status": r.get("status") or "",
         }
         for r in routes
-        if truthy(r.get("mayor_funcion")) and canonical(r.get("driver"))
+        if int(r.get("mayor_funcion") or 0) == 1 and canonical(r.get("driver"))
     ]
     detail.sort(key=lambda x: (x["date"], x["division"], x["employee_name"]))
     summary_map: dict[tuple[str, str], dict[str, Any]] = {}
@@ -2402,9 +2439,47 @@ def mayor_funcion_rows(params: dict[str, str]) -> dict[str, Any]:
         dates = sorted(acc.pop("dates"))
         summary.append({**acc, "dias": len(dates), "dates": dates})
     summary.sort(key=lambda x: (-x["dias"], x["employee_name"]))
+    # "A confirmar": quien maneja un día y habitualmente sale como ayudante (más días de ayudante
+    # que de chofer en los 90 días previos y el rango), o tiene rol principal AYUDANTE.
+    lookback = (date.fromisoformat(start) - timedelta(days=90)).isoformat()
+    history = routes if lookback >= start else history_rows({"start": lookback, "end": end, "division": division})["routes"]
+    as_driver: dict[str, set[str]] = {}
+    as_helper: dict[str, set[str]] = {}
+    for r in history:
+        if canonical(r.get("driver")):
+            as_driver.setdefault(canonical(r.get("driver")), set()).add(r["planning_date"])
+        for h in (r.get("helper1"), r.get("helper2")):
+            if canonical(h):
+                as_helper.setdefault(canonical(h), set()).add(r["planning_date"])
+    with db() as con:
+        helper_roles = {
+            canonical(r["name"])
+            for r in con.execute("SELECT name, primary_role FROM employees").fetchall()
+            if canonical(r["primary_role"]) == "AYUDANTE"
+        }
+    helper_roles |= {name for name, days in as_helper.items() if len(days) > len(as_driver.get(name, ()))}
+    suggested = sorted(
+        (
+            {
+                "id": str(r.get("id")),
+                "date": r["planning_date"],
+                "employee_name": canonical(r.get("driver")),
+                "division": r["division"],
+                "domain": r.get("domain") or "",
+                "locality": r.get("locality") or "",
+                "helpers": " / ".join(x for x in (r.get("helper1"), r.get("helper2")) if x),
+                "status": r.get("status") or "",
+                "helper_days": len(as_helper.get(canonical(r.get("driver")), ())),
+                "driver_days": len(as_driver.get(canonical(r.get("driver")), ())),
+            }
+            for r in routes
+            if int(r.get("mayor_funcion") or 0) == 0 and canonical(r.get("driver")) in helper_roles
+        ),
+        key=lambda x: (x["date"], x["division"], x["employee_name"]),
+    )
     period_start, period_end, period_label = recarga_period(date.fromisoformat(start))
     label = period_label if (start, end) == (period_start, period_end) else f"{date.fromisoformat(start).strftime('%d/%m/%Y')} al {date.fromisoformat(end).strftime('%d/%m/%Y')}"
-    return {"start": start, "end": end, "division": division, "label": label, "summary": summary, "detail": detail}
+    return {"start": start, "end": end, "division": division, "label": label, "summary": summary, "detail": detail, "suggested": suggested}
 
 
 def mayor_funcion_csv(data: dict[str, Any]) -> bytes:
@@ -5176,6 +5251,11 @@ class Handler(BaseHTTPRequestHandler):
                 delete_master(payload.get("table", ""), int(payload.get("id") or 0))
                 register_audit_event(None, user, "Eliminación de configuración", "Configuración", record_type=payload.get("table", ""), record_id=str(payload.get("id") or ""), ip_address=self.client_ip())
                 self.send_json({"ok": True, **master_payload()})
+            elif path == "/api/mayor-funcion/set":
+                ids = payload.get("ids") or [payload.get("id")]
+                value = int(payload.get("value", 1))
+                done = [set_mayor_funcion(route_id, value, user, self.client_ip()) for route_id in ids if route_id]
+                self.send_json({"ok": True, "updated": done})
             elif path == "/api/history/mail":
                 open_history_mail(payload, payload.get("section", "routes"))
                 register_audit_event(None, user, "Generación mail histórico", "Histórico", payload.get("start", ""), payload.get("division", "TODAS"), ip_address=self.client_ip())
