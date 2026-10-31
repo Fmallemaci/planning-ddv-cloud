@@ -1435,7 +1435,7 @@ def dates_list() -> list[str]:
 def master_payload() -> dict[str, Any]:
     with db() as con:
         employees = [dict(r) for r in con.execute(
-            "SELECT id,employee_code,name,division,base_locality,can_driver,can_helper,active FROM employees ORDER BY division,name"
+            "SELECT id,employee_code,name,division,base_locality,can_driver,can_helper,primary_role,active FROM employees ORDER BY division,name"
         ).fetchall()]
         # La pantalla usa TRELEW / PUERTO MADRYN; en Postgres se guarda TW / PM.
         employees = normalize_catalog_rows(employees)
@@ -2097,6 +2097,15 @@ def recarga_rows(start_date: str, end_date: str, division: str = "") -> dict[str
     }
 
 
+def employee_primary_role(row: dict[str, Any]) -> str:
+    """Rol principal elegido en Configuración; si no viene, se deduce de 'puede manejar'.
+    Un AYUDANTE con carnet queda AYUDANTE aunque pueda manejar (para el Adicional Mayor Función)."""
+    role = canonical(row.get("primary_role"))
+    if role in {"CHOFER", "AYUDANTE"}:
+        return role
+    return "CHOFER" if truthy(row.get("can_driver")) else "AYUDANTE"
+
+
 def save_master(table: str, rows: list[dict[str, Any]]) -> None:
     with db() as con:
         if table == "employees":
@@ -2110,7 +2119,7 @@ def save_master(table: str, rows: list[dict[str, Any]]) -> None:
                 columns = ["employee_code", "name", "division", "primary_role", "active", "base_locality", "can_driver", "can_helper"]
                 values: list[Any] = [
                     str(row.get("employee_code", "") or ""), name, route_division_for_db(row.get("division")),
-                    "CHOFER" if row.get("can_driver") else "AYUDANTE", active_value("employees", bool(row.get("active", True)), column="active"),
+                    employee_primary_role(row), active_value("employees", bool(row.get("active", True)), column="active"),
                     canonical(row.get("base_locality")), active_value("employees", bool(row.get("can_driver")), column="can_driver"), active_value("employees", bool(row.get("can_helper")), column="can_helper"),
                 ]
                 # La tabla employees de Supabase trae columnas heredadas (full_name NOT NULL, can_drive, can_assist).
