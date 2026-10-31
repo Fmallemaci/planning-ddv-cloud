@@ -201,6 +201,7 @@ alter table planning_routes add column if not exists created_at text not null de
 alter table planning_routes add column if not exists updated_at text not null default to_char(now(), 'YYYY-MM-DD"T"HH24:MI:SS');
 alter table planning_routes add column if not exists whatsapp_observation text default '';
 alter table planning_routes add column if not exists kms numeric not null default 0;
+alter table planning_routes add column if not exists mayor_funcion integer not null default 0;
 
 alter table employees add column if not exists employee_code text default '';
 alter table employees add column if not exists name text not null default '';
