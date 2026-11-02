@@ -1743,6 +1743,48 @@ def save_routes(
                     },
                     ip_address=ip_address,
                 )
+        clear_novelties_for_assigned(con, planning_date, user, ip_address)
+
+
+def assigned_names_for_date(con: Any, planning_date: str) -> set[str]:
+    """Personas asignadas (chofer/ayudantes) en cualquier salida de la fecha."""
+    if postgres_enabled():
+        query = f"""
+            SELECT pr.driver,pr.helper1,pr.helper2 FROM planning_routes pr
+            {PG_ROUTE_DAY_JOINS}
+            WHERE {PG_ROUTE_EFFECTIVE_DATE}=?
+        """
+    else:
+        query = "SELECT driver,helper1,helper2 FROM planning_routes WHERE planning_date=?"
+    rows = con.execute(query, (planning_date,)).fetchall()
+    return {canonical(r[i]) for r in rows for i in range(3) if canonical(r[i])}
+
+
+def clear_novelties_for_assigned(con: Any, planning_date: str, user: dict[str, Any] | None = None, ip_address: str = "") -> list[str]:
+    """Una única fuente de verdad por persona y día: si alguien quedó asignado a una
+    salida (p. ej. un cambio de último momento sobre alguien que estaba de FRANCO),
+    se borra su novedad de ese día para que no siga figurando en reportes, mails ni
+    historial. Si después se lo vuelve a sacar de la salida, aparece de nuevo como
+    pendiente en Novedades."""
+    assigned = assigned_names_for_date(con, planning_date)
+    if not assigned:
+        return []
+    stale = [dict(r) for r in con.execute(
+        "SELECT employee_name,division,reason,notes FROM personnel_novelties WHERE novelty_date=?", (planning_date,)
+    ).fetchall() if canonical(r["employee_name"]) in assigned]
+    for row in stale:
+        con.execute(
+            "DELETE FROM personnel_novelties WHERE novelty_date=? AND employee_name=?",
+            (planning_date, row["employee_name"]),
+        )
+        if row.get("reason"):
+            register_audit_event(
+                con, user, "Novedad anulada por asignación", "Novedades", planning_date,
+                row.get("division", ""), "personnel_novelties", str(row["employee_name"]),
+                previous_data=row, new_data={"motivo": "La persona quedó asignada a una salida ese día."},
+                ip_address=ip_address,
+            )
+    return [str(r["employee_name"]) for r in stale]
 
 
 # planning_routes.mayor_funcion: 1 = confirmado, 0 = sin marcar, -1 = sugerencia descartada.
@@ -2008,9 +2050,12 @@ def save_novelties(planning_date: str, rows: list[dict[str, Any]], mode: str = "
 
 def novelty_rows(planning_date: str) -> list[dict[str, Any]]:
     with db() as con:
-        return [dict(r) for r in con.execute(
+        rows = [dict(r) for r in con.execute(
             """SELECT * FROM personnel_novelties WHERE novelty_date=? AND reason<>'' ORDER BY CASE UPPER(TRIM(division)) WHEN 'TRELEW' THEN 1 WHEN 'PUERTO MADRYN' THEN 2 ELSE 3 END, employee_name""", (planning_date,)
         ).fetchall()]
+        # Quien figura en una salida ese día trabaja: la salida manda sobre la novedad.
+        assigned = assigned_names_for_date(con, planning_date) if rows else set()
+    return [r for r in rows if canonical(r.get("employee_name")) not in assigned]
 
 
 def recarga_rows(start_date: str, end_date: str, division: str = "") -> dict[str, Any]:
@@ -2258,6 +2303,14 @@ def history_rows(params: dict[str, str]) -> dict[str, Any]:
     with db() as con:
         routes = [normalize_route_output(dict(r)) for r in con.execute(query, qparams).fetchall()]
         novelties = [dict(r) for r in con.execute(nov_query, nov_params).fetchall()]
+    working = {
+        (normalize_date_value(r.get("planning_date")) or str(r.get("planning_date") or ""), canonical(name))
+        for r in routes for name in (r.get("driver"), r.get("helper1"), r.get("helper2")) if canonical(name)
+    }
+    novelties = [
+        n for n in novelties
+        if ((normalize_date_value(n.get("novelty_date")) or str(n.get("novelty_date") or "")), canonical(n.get("employee_name"))) not in working
+    ]
     grouped: dict[tuple[str, str], dict[str, float]] = {}
     capacities = {"TRELEW": 6, "PUERTO MADRYN": 5}
     for r in routes:
